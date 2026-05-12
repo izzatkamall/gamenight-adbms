@@ -1,18 +1,20 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Copy, Check, Users, Gamepad2, Clock, Crown, X, AlertCircle } from 'lucide-react'
+import { Copy, Check, Users, Gamepad2, Clock, Crown, X, AlertCircle, TrendingUp, Star } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
 import Avatar from '../components/ui/Avatar'
 
 export default function RoomLobby() {
-  const { id }      = useParams()
-  const { user }    = useAuth()
-  const navigate    = useNavigate()
+  const { id }   = useParams()
+  const { user } = useAuth()
+  const navigate = useNavigate()
 
   const [room, setRoom]           = useState(null)
   const [members, setMembers]     = useState([])
   const [games, setGames]         = useState([])
+  const [shortlist, setShortlist] = useState([])
+  const [ratings, setRatings]     = useState({})
   const [loading, setLoading]     = useState(true)
   const [notFound, setNotFound]   = useState(false)
   const [copied, setCopied]       = useState(false)
@@ -22,13 +24,26 @@ export default function RoomLobby() {
     if (user) loadRoom()
   }, [id, user])
 
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && user) loadRoom()
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }, [user, id])
+
   async function loadRoom() {
     setLoading(true)
-
-    const [{ data: roomData }, { data: membersData }, { data: gamesData }] = await Promise.all([
+    const [
+      { data: roomData },
+      { data: membersData },
+      { data: gamesData },
+      { data: shortlistData },
+    ] = await Promise.all([
       supabase.from('rooms').select('*').eq('id', id).single(),
       supabase.rpc('get_room_members', { p_room_id: id }),
       supabase.rpc('get_common_games',  { p_room_id: id }),
+      supabase.rpc('get_shortlist',     { p_room_id: id }),
     ])
 
     if (!roomData) { setNotFound(true); setLoading(false); return }
@@ -36,7 +51,20 @@ export default function RoomLobby() {
     setRoom(roomData)
     setMembers(membersData ?? [])
     setGames(gamesData ?? [])
+    setShortlist(shortlistData ?? [])
     setLoading(false)
+  }
+
+  async function rateGame(gameId, rating) {
+    await supabase.rpc('update_user_preferences', {
+      p_user_id: user.id,
+      p_game_id: gameId,
+      p_rating:  rating,
+    })
+    setRatings(prev => ({ ...prev, [gameId]: rating }))
+    // Re-rank the shortlist after a new rating
+    const { data } = await supabase.rpc('get_shortlist', { p_room_id: id })
+    if (data) setShortlist(data)
   }
 
   async function copyCode() {
@@ -54,8 +82,7 @@ export default function RoomLobby() {
 
   const isHost = room?.host_id === user?.id
 
-  if (loading) return <LoadingState />
-
+  if (loading)  return <LoadingState />
   if (notFound) return (
     <div className="min-h-screen bg-background flex items-center justify-center px-6">
       <div className="text-center">
@@ -87,7 +114,6 @@ export default function RoomLobby() {
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
-              {/* Invite code */}
               {room.status === 'open' && (
                 <button
                   onClick={copyCode}
@@ -98,8 +124,6 @@ export default function RoomLobby() {
                   {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
                 </button>
               )}
-
-              {/* Close room — host only */}
               {isHost && room.status === 'open' && (
                 <button
                   onClick={closeRoom}
@@ -107,8 +131,7 @@ export default function RoomLobby() {
                   className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-red-500/10 border border-red-500/20
                     text-red-400 hover:bg-red-500/20 text-sm font-medium transition-all disabled:opacity-50"
                 >
-                  <X size={14} />
-                  Close Room
+                  <X size={14} /> Close Room
                 </button>
               )}
             </div>
@@ -138,36 +161,69 @@ export default function RoomLobby() {
             </div>
           </div>
 
-          {/* Common games */}
-          <div>
-            <div className="flex items-center gap-2 mb-5">
-              <Gamepad2 size={16} className="text-slate-500" />
-              <h2 className="font-display font-semibold text-white">Games Everyone Owns</h2>
-              {games.length > 0 && (
-                <span className="text-xs text-slate-600 bg-white/[0.04] border border-white/[0.07] px-2 py-0.5 rounded-full">
-                  {games.length}
-                </span>
-              )}
-            </div>
+          {/* Games column */}
+          <div className="space-y-6">
 
-            {games.length === 0 ? (
-              <div className="glass rounded-2xl p-10 border border-white/[0.07] text-center">
-                <Gamepad2 size={32} className="text-slate-700 mx-auto mb-3" />
-                <h3 className="font-display font-semibold text-white mb-2">No games in common</h3>
-                <p className="text-slate-500 text-sm max-w-xs mx-auto">
-                  Add more games to your library. A game appears here only when every member owns it.
-                </p>
-                <button onClick={() => navigate('/library')} className="btn-ghost px-5 py-2 text-sm mt-5">
-                  Go to Library
-                </button>
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                {games.map(game => (
-                  <CommonGameCard key={game.id} game={game} />
-                ))}
+            {/* Group Picks — shortlist ranked by preference */}
+            {shortlist.length > 0 && (
+              <div className="glass rounded-2xl p-6 border border-primary/20">
+                <div className="flex items-center gap-2 mb-5">
+                  <TrendingUp size={16} className="text-primary" />
+                  <h2 className="font-display font-semibold text-white">Group Picks</h2>
+                  <span className="text-xs text-slate-600 bg-white/[0.04] border border-white/[0.06] px-2 py-0.5 rounded-full ml-1">
+                    Ranked by taste profile
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {shortlist.map((game, i) => (
+                    <ShortlistRow
+                      key={game.id}
+                      game={game}
+                      rank={i + 1}
+                      userRating={ratings[game.id]}
+                      onRate={rateGame}
+                    />
+                  ))}
+                </div>
               </div>
             )}
+
+            {/* All common games */}
+            <div>
+              <div className="flex items-center gap-2 mb-5">
+                <Gamepad2 size={16} className="text-slate-500" />
+                <h2 className="font-display font-semibold text-white">Games Everyone Owns</h2>
+                {games.length > 0 && (
+                  <span className="text-xs text-slate-600 bg-white/[0.04] border border-white/[0.07] px-2 py-0.5 rounded-full">
+                    {games.length}
+                  </span>
+                )}
+              </div>
+
+              {games.length === 0 ? (
+                <div className="glass rounded-2xl p-10 border border-white/[0.07] text-center">
+                  <Gamepad2 size={32} className="text-slate-700 mx-auto mb-3" />
+                  <h3 className="font-display font-semibold text-white mb-2">No games in common</h3>
+                  <p className="text-slate-500 text-sm max-w-xs mx-auto">
+                    Add more games to your library. A game appears here only when every member owns it.
+                  </p>
+                  <button onClick={() => navigate('/library')} className="btn-ghost px-5 py-2 text-sm mt-5">
+                    Go to Library
+                  </button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                  {games.map(game => (
+                    <CommonGameCard
+                      key={game.id}
+                      game={game}
+                      userRating={ratings[game.id]}
+                      onRate={rateGame}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -175,7 +231,52 @@ export default function RoomLobby() {
   )
 }
 
-function CommonGameCard({ game }) {
+/* ── Shortlist row ─────────────────────────────────────────────── */
+function ShortlistRow({ game, rank, userRating, onRate }) {
+  const [imgError, setImgError] = useState(false)
+  const score = Math.round((game.group_score ?? 0.5) * 100)
+
+  return (
+    <div className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]
+      hover:border-white/10 transition-all">
+      <span className="text-slate-600 font-mono text-xs w-5 text-center flex-shrink-0">#{rank}</span>
+
+      <div className="w-16 h-9 rounded-lg overflow-hidden bg-white/[0.04] flex-shrink-0">
+        {game.cover_url && !imgError ? (
+          <img src={game.cover_url} alt={game.title}
+            className="w-full h-full object-cover"
+            onError={() => setImgError(true)} />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <Gamepad2 size={14} className="text-slate-700" />
+          </div>
+        )}
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <p className="font-display font-semibold text-sm text-white line-clamp-1">{game.title}</p>
+        <div className="flex items-center gap-2 mt-0.5">
+          {game.genres.slice(0, 2).map(g => (
+            <span key={g} className="text-[10px] text-slate-600">{g}</span>
+          ))}
+        </div>
+      </div>
+
+      <div className={`flex-shrink-0 text-xs font-bold px-2 py-0.5 rounded-full ${
+        score >= 70 ? 'bg-green-500/15 text-green-400' :
+        score >= 50 ? 'bg-primary/15 text-primary' :
+                      'bg-white/[0.05] text-slate-500'
+      }`}>
+        {score}%
+      </div>
+
+      <StarRating gameId={game.id} currentRating={userRating} onRate={onRate} />
+    </div>
+  )
+}
+
+/* ── Common game card ──────────────────────────────────────────── */
+function CommonGameCard({ game, userRating, onRate }) {
   const [imgError, setImgError] = useState(false)
 
   return (
@@ -183,12 +284,9 @@ function CommonGameCard({ game }) {
       transition-all duration-200 hover:shadow-[0_0_16px_rgba(124,58,237,0.12)] group">
       <div className="relative aspect-[16/9] bg-white/[0.04]">
         {game.cover_url && !imgError ? (
-          <img
-            src={game.cover_url}
-            alt={game.title}
+          <img src={game.cover_url} alt={game.title}
             className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-            onError={() => setImgError(true)}
-          />
+            onError={() => setImgError(true)} />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             <Gamepad2 size={24} className="text-slate-700" />
@@ -197,15 +295,57 @@ function CommonGameCard({ game }) {
       </div>
       <div className="p-3">
         <p className="font-display font-semibold text-sm text-white line-clamp-1 mb-1">{game.title}</p>
-        <div className="flex items-center justify-between text-[11px] text-slate-600">
+        <div className="flex items-center justify-between text-[11px] text-slate-600 mb-2">
           <span className="flex items-center gap-1"><Users size={11} />{game.min_players}–{game.max_players}</span>
           <span className="flex items-center gap-1"><Clock size={11} />{game.avg_playtime_minutes}m</span>
         </div>
+        <StarRating gameId={game.id} currentRating={userRating} onRate={onRate} />
       </div>
     </div>
   )
 }
 
+/* ── Star rating widget ────────────────────────────────────────── */
+function StarRating({ gameId, currentRating, onRate }) {
+  const [hover, setHover] = useState(0)
+  const locked = !!currentRating
+  const active = hover || currentRating || 0
+
+  if (locked) {
+    return (
+      <div className="flex items-center gap-0.5" title="Already rated this session">
+        {[1, 2, 3, 4, 5].map(n => (
+          <Star
+            key={n}
+            size={12}
+            className={n <= currentRating ? 'text-yellow-400' : 'text-slate-700'}
+            fill={n <= currentRating ? 'currentColor' : 'none'}
+          />
+        ))}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-0.5">
+      {[1, 2, 3, 4, 5].map(n => (
+        <button
+          key={n}
+          onClick={() => onRate(gameId, n)}
+          onMouseEnter={() => setHover(n)}
+          onMouseLeave={() => setHover(0)}
+          className={`p-0.5 transition-colors ${
+            n <= active ? 'text-yellow-400' : 'text-slate-700 hover:text-yellow-400/60'
+          }`}
+        >
+          <Star size={12} fill={n <= active ? 'currentColor' : 'none'} />
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/* ── Status badge ──────────────────────────────────────────────── */
 function StatusBadge({ status }) {
   const styles = {
     open:           'bg-green-500/15 border-green-500/25 text-green-400',
@@ -221,6 +361,7 @@ function StatusBadge({ status }) {
   )
 }
 
+/* ── Loading skeleton ──────────────────────────────────────────── */
 function LoadingState() {
   return (
     <div className="min-h-screen bg-background pt-24 pb-16 px-6">
