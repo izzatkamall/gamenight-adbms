@@ -42,18 +42,23 @@ export default function Profile() {
     setSaving(true)
     setSaveError(null)
 
-    const { error } = await supabase
-      .from('profiles')
-      .update({ username: newUsername.trim() })
-      .eq('id', user.id)
+    try {
+      const { error } = await supabase.rpc('update_username', {
+        p_user_id: user.id,
+        p_username: newUsername.trim(),
+      })
 
-    if (error) {
-      setSaveError(error.message.includes('unique') ? 'Username already taken.' : error.message)
-    } else {
-      await refreshProfile(user.id)
-      setEditingUsername(false)
+      if (error) {
+        setSaveError(error.message.includes('unique') ? 'Username already taken.' : error.message)
+      } else {
+        await refreshProfile(user.id)
+        setEditingUsername(false)
+      }
+    } catch {
+      setSaveError('Failed to save. Please try again.')
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   const genreWeights = profile?.preferences?.genre_weights ?? {}
@@ -87,11 +92,14 @@ export default function Profile() {
                       onKeyDown={e => { if (e.key === 'Enter') saveUsername(); if (e.key === 'Escape') cancelEdit() }}
                     />
                     <button onClick={saveUsername} disabled={saving}
-                      className="w-8 h-8 rounded-lg bg-green-500/20 border border-green-500/30 flex items-center justify-center text-green-400 hover:bg-green-500/30 transition-colors">
-                      <Check size={14} />
+                      className="w-8 h-8 flex-shrink-0 rounded-lg bg-green-500/20 border border-green-500/30 flex items-center justify-center text-green-400 hover:bg-green-500/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                      {saving
+                        ? <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                        : <Check size={14} />
+                      }
                     </button>
                     <button onClick={cancelEdit} disabled={saving}
-                      className="w-8 h-8 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
+                      className="w-8 h-8 flex-shrink-0 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
                       <X size={14} />
                     </button>
                   </div>

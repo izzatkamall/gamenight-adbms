@@ -7,4 +7,11 @@ if (!supabaseUrl || !supabaseKey) {
   throw new Error('Missing Supabase env vars. Check frontend/.env.local')
 }
 
-export const supabase = createClient(supabaseUrl, supabaseKey)
+export const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: false,
+    lock: async (_name, _acquireTimeout, fn) => fn(),
+  },
+})

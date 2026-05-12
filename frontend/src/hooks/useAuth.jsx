@@ -9,20 +9,41 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true)
 
   const fetchProfile = useCallback(async (userId) => {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single()
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single()
 
-    if (!error) setProfile(data)
+      if (!error && data) setProfile(data)
+    } catch {
+      // Profile fetch failed — user still gets in, profile just shows empty
+    }
   }, [])
 
   useEffect(() => {
+    let settled = false
+
+    // Safety net: if getSession + fetchProfile takes >6s, unblock the spinner
+    const timeout = setTimeout(() => {
+      if (!settled) {
+        settled = true
+        setLoading(false)
+      }
+    }, 6000)
+
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       setUser(session?.user ?? null)
       if (session?.user) await fetchProfile(session.user.id)
-      setLoading(false)
+    }).catch(() => {
+      // Network failure — unblock with no user
+    }).finally(() => {
+      if (!settled) {
+        settled = true
+        clearTimeout(timeout)
+        setLoading(false)
+      }
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -36,13 +57,20 @@ export function AuthProvider({ children }) {
       }
     )
 
-    return () => subscription.unsubscribe()
+    return () => {
+      clearTimeout(timeout)
+      subscription.unsubscribe()
+    }
   }, [fetchProfile])
 
   async function signOut() {
-    await supabase.auth.signOut()
     setUser(null)
     setProfile(null)
+    // Always wipe localStorage before the async call so a refresh never restores the session
+    Object.keys(localStorage)
+      .filter(k => k.startsWith('sb-'))
+      .forEach(k => localStorage.removeItem(k))
+    supabase.auth.signOut().catch(() => {})
   }
 
   return (

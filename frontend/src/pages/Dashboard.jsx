@@ -1,9 +1,28 @@
-import { Plus, Hash, ChevronRight, Gamepad2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { Plus, Hash, ChevronRight, Gamepad2, Library } from 'lucide-react'
+import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
 import Avatar from '../components/ui/Avatar'
 
 export default function Dashboard() {
-  const { profile } = useAuth()
+  const { user, profile } = useAuth()
+  const navigate = useNavigate()
+  const [rooms, setRooms]     = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (user) fetchRooms()
+  }, [user])
+
+  async function fetchRooms() {
+    const { data } = await supabase
+      .from('rooms')
+      .select('*')
+      .order('created_at', { ascending: false })
+    setRooms(data ?? [])
+    setLoading(false)
+  }
 
   return (
     <div className="min-h-screen bg-background pt-24 pb-16 px-6 relative overflow-hidden">
@@ -29,79 +48,135 @@ export default function Dashboard() {
         </div>
 
         {/* Action cards */}
-        <div className="grid sm:grid-cols-2 gap-5 mb-10">
+        <div className="grid sm:grid-cols-3 gap-5 mb-10">
           <ActionCard
             icon={<Plus size={24} />}
             title="Create a Room"
-            desc="Start a new game night. Invite your squad and find your common library."
+            desc="Start a new game night and invite your squad."
             gradient="from-primary/20 to-primary/5"
             border="border-primary/25"
             iconColor="text-primary"
-            disabled
-            comingSoon
+            onClick={() => navigate('/rooms/create')}
           />
           <ActionCard
             icon={<Hash size={24} />}
             title="Join a Room"
-            desc="Have an invite code? Enter it to jump straight into your squad's room."
+            desc="Have an invite code? Jump into your squad's room."
             gradient="from-secondary/20 to-secondary/5"
             border="border-secondary/25"
             iconColor="text-secondary"
-            disabled
-            comingSoon
+            onClick={() => navigate('/rooms/join')}
+          />
+          <ActionCard
+            icon={<Library size={24} />}
+            title="My Library"
+            desc="Add or remove games from your personal library."
+            gradient="from-white/5 to-white/[0.02]"
+            border="border-white/10"
+            iconColor="text-slate-400"
+            onClick={() => navigate('/library')}
           />
         </div>
 
-        {/* Recent activity placeholder */}
+        {/* Rooms list */}
         <div className="glass rounded-2xl p-8 border border-white/[0.07]">
           <h2 className="font-display font-semibold text-lg text-white mb-6">Your Rooms</h2>
-          <EmptyState />
+
+          {loading ? (
+            <div className="space-y-3">
+              {[1, 2].map(i => <div key={i} className="skeleton h-16 rounded-xl" />)}
+            </div>
+          ) : rooms.length === 0 ? (
+            <EmptyState onAction={() => navigate('/rooms/create')} />
+          ) : (
+            <div className="space-y-3">
+              {rooms.map(room => (
+                <RoomRow
+                  key={room.id}
+                  room={room}
+                  isHost={room.host_id === user?.id}
+                  onClick={() => navigate(`/rooms/${room.id}`)}
+                />
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
   )
 }
 
-function ActionCard({ icon, title, desc, gradient, border, iconColor, disabled, comingSoon }) {
+function ActionCard({ icon, title, desc, gradient, border, iconColor, onClick }) {
   return (
     <div
+      onClick={onClick}
       className={`glass rounded-2xl p-7 border ${border} flex flex-col gap-4 relative overflow-hidden
-        ${disabled ? 'opacity-70' : 'glass-hover cursor-pointer'}`}
+        glass-hover cursor-pointer`}
     >
       <div className={`absolute inset-0 bg-gradient-to-br ${gradient} pointer-events-none`} />
-      <div className="relative z-10 flex items-start justify-between gap-4">
-        <div className={`w-12 h-12 rounded-xl bg-white/[0.06] border ${border} flex items-center justify-center ${iconColor}`}>
+      <div className="relative z-10">
+        <div className={`w-12 h-12 rounded-xl bg-white/[0.06] border ${border} flex items-center justify-center ${iconColor} mb-4`}>
           {icon}
         </div>
-        {comingSoon && (
-          <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-600 bg-white/[0.04] border border-white/[0.07] px-2.5 py-1 rounded-full">
-            Phase 3
-          </span>
-        )}
-      </div>
-      <div className="relative z-10">
         <h3 className="font-display font-semibold text-white text-lg mb-1.5">{title}</h3>
         <p className="text-slate-500 text-sm leading-relaxed">{desc}</p>
       </div>
-      {!disabled && (
-        <div className="relative z-10 flex items-center gap-1 text-sm font-semibold text-slate-400">
-          Let's go <ChevronRight size={16} />
-        </div>
-      )}
+      <div className="relative z-10 flex items-center gap-1 text-sm font-semibold text-slate-400 mt-auto">
+        Let's go <ChevronRight size={16} />
+      </div>
     </div>
   )
 }
 
-function EmptyState() {
+function RoomRow({ room, isHost, onClick }) {
+  const statusStyles = {
+    open:           'bg-green-500/15 border-green-500/25 text-green-400',
+    voting:         'bg-primary/15 border-primary/25 text-primary',
+    session_active: 'bg-secondary/15 border-secondary/25 text-secondary',
+    closed:         'bg-white/[0.05] border-white/10 text-slate-500',
+  }
+  const statusLabels = { open: 'Open', voting: 'Voting', session_active: 'Playing', closed: 'Closed' }
+
+  return (
+    <div
+      onClick={onClick}
+      className="flex items-center justify-between px-5 py-4 rounded-xl bg-white/[0.03] border
+        border-white/[0.06] hover:bg-white/[0.06] hover:border-white/10 cursor-pointer transition-all"
+    >
+      <div className="flex items-center gap-4">
+        <div className="w-9 h-9 rounded-lg bg-primary/15 border border-primary/20 flex items-center justify-center">
+          <Gamepad2 size={16} className="text-primary" />
+        </div>
+        <div>
+          <p className="font-medium text-white text-sm">{room.name}</p>
+          <p className="text-xs text-slate-600">{isHost ? 'Host' : 'Member'} · {new Date(room.created_at).toLocaleDateString()}</p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <span className={`text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full border
+          ${statusStyles[room.status] ?? statusStyles.closed}`}>
+          {statusLabels[room.status] ?? room.status}
+        </span>
+        <ChevronRight size={16} className="text-slate-600" />
+      </div>
+    </div>
+  )
+}
+
+function EmptyState({ onAction }) {
   return (
     <div className="flex flex-col items-center justify-center py-12 text-center">
       <div className="w-16 h-16 rounded-2xl bg-white/[0.04] border border-white/[0.07] flex items-center justify-center mb-4">
         <Gamepad2 size={28} className="text-slate-600" />
       </div>
       <h3 className="font-display font-semibold text-white mb-2">No rooms yet</h3>
-      <p className="text-slate-600 text-sm max-w-xs">
-        Create a room or join one using an invite code. Rooms will appear here.
+      <p className="text-slate-600 text-sm max-w-xs mb-6">
+        Create a room or join one using an invite code.
       </p>
+      <button onClick={onAction} className="btn-primary px-6 py-2.5 text-sm">
+        Create your first room
+      </button>
     </div>
   )
 }

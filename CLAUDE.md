@@ -552,6 +552,17 @@ This project must clearly demonstrate the following — these are the graded asp
 
 ---
 
+## Known Bugs / Deferred Issues
+
+### Username change not saving (Phase 2 — deferred)
+- **Symptom:** Clicking ✓ on Profile page spins indefinitely, username never updates.
+- **Root cause:** Direct `supabase.from('profiles').update()` call triggers RLS policy evaluation which has a recursion chain involving `room_members`. Migrations 005 and 006 partially addressed this but did not resolve it.
+- **Attempted fix:** Switched to `supabase.rpc('update_username', ...)` calling a SECURITY DEFINER function — still did not resolve.
+- **Next step:** Investigate why `auth.uid()` may not be resolving correctly inside the SECURITY DEFINER function, or try a different approach (e.g., `supabase.auth.updateUser()` for metadata, or debug the exact PostgREST request in the Network tab).
+- **Priority:** Fix before final submission. Does not block Phases 3–6.
+
+---
+
 ## Rules for Claude
 
 - Implement one phase at a time. Do not scaffold Phase 3 code while Phase 2 tests are not yet passing.
