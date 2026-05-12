@@ -485,10 +485,10 @@ Members: user_id (prevents double-voting)
 
 | # | Phase | Key Deliverable | Status |
 |---|---|---|---|
-| 1 | Database Setup | All Supabase tables live, seeded, RLS on | Not started |
-| 2 | Auth & Profiles | Register, login, profile trigger working | Not started |
-| 3 | Libraries & Rooms | Common library intersection query working | Not started |
-| 4 | Preference Profiles | JSONB profiles updating, shortlist ranking working | Not started |
+| 1 | Database Setup | All Supabase tables live, seeded, RLS on | ✅ Complete — tagged phase-1 |
+| 2 | Auth & Profiles | Register, login, profile trigger working | ✅ Complete — tagged phase-2 |
+| 3 | Libraries & Rooms | Common library intersection query working | ✅ Complete — tagged phase-3 |
+| 4 | Preference Profiles | JSONB profiles updating, shortlist ranking working | ✅ Complete — tagged phase-4 |
 | 5 | Live Voting | Redis voting with real-time WebSocket updates | Not started |
 | 6 | Session History | Full session logging and rating flow | Not started |
 | 7 | Polish & GitHub | Styled app pushed to public repo | Not started |
@@ -549,6 +549,49 @@ This project must clearly demonstrate the following — these are the graded asp
 - **GitHub repo name:** gamenight-adbms
 - **GitHub username:** izzatkamall
 - **GitHub push cadence:** After every phase, with a tag (phase-1, phase-2, …)
+
+---
+
+## Current State (resuming for Phase 5)
+
+### What is built and working
+- Full dark/glass UI design system (Tailwind, Space Grotesk + Inter fonts)
+- Auth: register, login, logout, session persistence, profile auto-created via trigger
+- Library page: browse 45 seeded games, toggle ownership (user_libraries table)
+- Dashboard: live rooms list with status badges, action card navigation
+- Create Room: insert into rooms + room_members, invite code auto-generated
+- Join Room: look up by invite code (get_room_by_invite_code RPC), join room_members
+- Room Lobby: members panel, common games grid (get_common_games RPC), Group Picks shortlist (get_shortlist RPC), star rating → update_user_preferences RPC
+- Profile page: username display, stats row, genre preference bars from JSONB
+
+### Critical fixes applied (must NOT revert)
+
+**1. Supabase JS Web Locks hang** — `frontend/src/lib/supabase.js`
+The Supabase JS v2 client hung indefinitely on all requests because a stale Web Lock prevented `getSession()` from resolving. Fixed by passing a no-op lock function:
+```js
+auth: { lock: async (_name, _acquireTimeout, fn) => fn() }
+```
+
+**2. RLS recursion on room_members** — migrations 005 & 006
+Self-referential policies caused infinite recursion. Fixed by introducing `get_user_room_ids()` SECURITY DEFINER helper and simplifying all policies to avoid direct `room_members` subqueries inside RLS USING clauses.
+
+**3. Role privileges missing** — migration 008
+Tables were created without explicit GRANT statements. `anon` and `authenticated` roles had no table-level SELECT/INSERT privileges. Fixed with `GRANT ... ON ... TO anon, authenticated`.
+
+**4. rooms INSERT…RETURNING RLS failure** — migration 009
+`INSERT...select().single()` on rooms failed because after INSERT the user isn't in room_members yet, so the SELECT USING policy blocked the RETURNING clause. Fixed by adding `rooms_select_host` policy: `USING (host_id = auth.uid())`.
+
+### Migrations applied to Supabase (in order)
+001_schema.sql, 002_rls.sql, 003_functions.sql, 004_seed_games.sql,
+005_fix_rls_recursion.sql, 006_fix_rls_recursion_complete.sql,
+007_phase3_functions.sql, 008_grant_role_privileges.sql, 009_rooms_host_select.sql
+
+### Phase 5 starting checklist
+Before writing any Phase 5 code, verify:
+- [ ] Redis is running: `redis-cli ping` → PONG
+- [ ] `middleware/` directory exists with `package.json` (run `npm init -y` if not)
+- [ ] `middleware/.env` has REDIS_URL, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, PORT=4000
+- [ ] `frontend/.env.local` has VITE_MIDDLEWARE_WS_URL=ws://localhost:4000
 
 ---
 
