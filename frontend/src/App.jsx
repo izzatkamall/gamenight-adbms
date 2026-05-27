@@ -10,7 +10,8 @@ import Profile    from './pages/Profile'
 import Library    from './pages/Library'
 import CreateRoom from './pages/CreateRoom'
 import JoinRoom   from './pages/JoinRoom'
-import RoomLobby  from './pages/RoomLobby'
+import RoomLobby     from './pages/RoomLobby'
+import VotingScreen  from './pages/VotingScreen'
 
 export default function App() {
   return (
@@ -26,7 +27,8 @@ export default function App() {
           <Route path="/library"       element={<ProtectedRoute><Library /></ProtectedRoute>} />
           <Route path="/rooms/create"  element={<ProtectedRoute><CreateRoom /></ProtectedRoute>} />
           <Route path="/rooms/join"    element={<ProtectedRoute><JoinRoom /></ProtectedRoute>} />
-          <Route path="/rooms/:id"     element={<ProtectedRoute><RoomLobby /></ProtectedRoute>} />
+          <Route path="/rooms/:id"      element={<ProtectedRoute><RoomLobby /></ProtectedRoute>} />
+          <Route path="/rooms/:id/vote" element={<ProtectedRoute><VotingScreen /></ProtectedRoute>} />
         </Routes>
       </AuthProvider>
     </BrowserRouter>

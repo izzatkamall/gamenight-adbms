@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Copy, Check, Users, Gamepad2, Clock, Crown, X, AlertCircle, TrendingUp, Star } from 'lucide-react'
+import { Copy, Check, Users, Gamepad2, Clock, Crown, X, AlertCircle, TrendingUp, Star, Vote } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
 import Avatar from '../components/ui/Avatar'
@@ -18,7 +18,8 @@ export default function RoomLobby() {
   const [loading, setLoading]     = useState(true)
   const [notFound, setNotFound]   = useState(false)
   const [copied, setCopied]       = useState(false)
-  const [closing, setClosing]     = useState(false)
+  const [closing, setClosing]           = useState(false)
+  const [startingVote, setStartingVote] = useState(false)
 
   useEffect(() => {
     if (user) loadRoom()
@@ -31,6 +32,24 @@ export default function RoomLobby() {
     document.addEventListener('visibilitychange', handleVisibility)
     return () => document.removeEventListener('visibilitychange', handleVisibility)
   }, [user, id])
+
+  // Supabase Realtime — navigate all room members when voting starts
+  useEffect(() => {
+    if (!id) return
+    const channel = supabase
+      .channel(`room-vote-${id}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `id=eq.${id}` },
+        payload => {
+          if (payload.new?.status === 'voting') {
+            navigate(`/rooms/${id}/vote`)
+          }
+        }
+      )
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [id])
 
   async function loadRoom() {
     setLoading(true)
@@ -80,6 +99,27 @@ export default function RoomLobby() {
     setClosing(false)
   }
 
+  async function startVote() {
+    if (shortlist.length === 0) return
+    setStartingVote(true)
+
+    // Create voting session
+    const { data: vsData, error } = await supabase
+      .from('voting_sessions')
+      .insert({ room_id: id })
+      .select('id')
+      .single()
+
+    if (error || !vsData) {
+      setStartingVote(false)
+      return
+    }
+
+    // Flip room to 'voting' — Realtime subscription will navigate everyone
+    await supabase.from('rooms').update({ status: 'voting' }).eq('id', id)
+    setStartingVote(false)
+  }
+
   const isHost = room?.host_id === user?.id
 
   if (loading)  return <LoadingState />
@@ -122,6 +162,25 @@ export default function RoomLobby() {
                 >
                   <span className="font-display font-bold tracking-widest text-primary">{room.invite_code}</span>
                   {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+                </button>
+              )}
+              {room.status === 'voting' && (
+                <button
+                  onClick={() => navigate(`/rooms/${id}/vote`)}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl btn-primary text-sm font-semibold"
+                >
+                  <Vote size={14} /> Join Vote
+                </button>
+              )}
+              {isHost && room.status === 'open' && shortlist.length > 0 && (
+                <button
+                  onClick={startVote}
+                  disabled={startingVote}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl btn-primary text-sm font-semibold
+                    transition-all disabled:opacity-50"
+                >
+                  <Vote size={14} />
+                  {startingVote ? 'Starting…' : 'Start Vote'}
                 </button>
               )}
               {isHost && room.status === 'open' && (
