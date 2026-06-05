@@ -33,6 +33,27 @@ function roomBroadcast(roomId, data) {
   }
 }
 
+async function resolveVote(roomId, voting_session_id, winnerGameId) {
+  const votesKey  = `vote:${roomId}:${voting_session_id}`
+  const votersKey = `voters:${roomId}:${voting_session_id}`
+  const now = new Date().toISOString()
+
+  await Promise.all([
+    supabase.from('voting_sessions')
+      .update({ ended_at: now, winner_game_id: winnerGameId })
+      .eq('id', voting_session_id),
+    supabase.from('rooms')
+      .update({ status: 'session_active' })
+      .eq('id', roomId),
+    supabase.from('game_sessions')
+      .insert({ room_id: roomId, game_id: winnerGameId, started_at: now }),
+  ])
+
+  await redis.del(votesKey, votersKey)
+  console.log(`[vote_end] winner=${winnerGameId} room=${roomId.slice(0,8)}`)
+  roomBroadcast(roomId, { type: 'vote_end', winner_game_id: winnerGameId })
+}
+
 async function handleVote(ws, roomId, userId, voting_session_id, game_id) {
   const votersKey = `voters:${roomId}:${voting_session_id}`
   const votesKey  = `vote:${roomId}:${voting_session_id}`
@@ -56,33 +77,54 @@ async function handleVote(ws, roomId, userId, voting_session_id, game_id) {
   console.log(`[vote] user=${userId.slice(0,8)} game=${game_id} tallies=${JSON.stringify(tallies)}`)
   roomBroadcast(roomId, { type: 'vote_update', tallies })
 
-  // Check for majority
   const { data: members } = await supabase
-    .from('room_members')
-    .select('user_id')
-    .eq('room_id', roomId)
+    .from('room_members').select('user_id').eq('room_id', roomId)
 
   const memberCount = members?.length ?? 2
   const majority    = Math.ceil(memberCount / 2)
-  const winner      = tallies.find(t => t.votes >= majority)
+  const voterCount  = await redis.scard(votersKey)
+
+  // Check majority first
+  let winner = tallies.find(t => t.votes >= majority)
+
+  // If all members voted but no majority — pick plurality (most votes)
+  if (!winner && voterCount >= memberCount) {
+    winner = tallies.reduce((top, t) => t.votes > top.votes ? t : top, tallies[0])
+    console.log(`[vote_plurality] game=${winner?.game_id} room=${roomId.slice(0,8)}`)
+  }
 
   if (winner) {
-    const now = new Date().toISOString()
-    await Promise.all([
-      supabase.from('voting_sessions')
-        .update({ ended_at: now, winner_game_id: winner.game_id })
-        .eq('id', voting_session_id),
-      supabase.from('rooms')
-        .update({ status: 'session_active' })
-        .eq('id', roomId),
-      supabase.from('game_sessions')
-        .insert({ room_id: roomId, game_id: winner.game_id, started_at: now }),
-    ])
-
-    await redis.del(votesKey, votersKey)
-    console.log(`[vote_end] winner=${winner.game_id} room=${roomId.slice(0,8)}`)
-    roomBroadcast(roomId, { type: 'vote_end', winner_game_id: winner.game_id })
+    await resolveVote(roomId, voting_session_id, winner.game_id)
   }
+}
+
+async function handleCancelVote(ws, roomId, userId) {
+  // Only the room host may cancel
+  const { data: room } = await supabase
+    .from('rooms').select('host_id').eq('id', roomId).single()
+
+  if (room?.host_id !== userId) {
+    ws.send(JSON.stringify({ type: 'error', message: 'Only the host can cancel a vote' }))
+    return
+  }
+
+  // Find the open voting session
+  const { data: vs } = await supabase
+    .from('voting_sessions').select('id')
+    .eq('room_id', roomId).is('ended_at', null)
+    .order('started_at', { ascending: false }).limit(1).single()
+
+  if (vs) {
+    const votesKey  = `vote:${roomId}:${vs.id}`
+    const votersKey = `voters:${roomId}:${vs.id}`
+    await redis.del(votesKey, votersKey)
+    await supabase.from('voting_sessions')
+      .update({ ended_at: new Date().toISOString() }).eq('id', vs.id)
+  }
+
+  await supabase.from('rooms').update({ status: 'open' }).eq('id', roomId)
+  console.log(`[vote_cancelled] host=${userId.slice(0,8)} room=${roomId.slice(0,8)}`)
+  roomBroadcast(roomId, { type: 'vote_cancelled' })
 }
 
 wss.on('connection', ws => {
@@ -101,14 +143,11 @@ wss.on('connection', ws => {
       if (!room_id || !user_id) return
 
       const { data, error } = await supabase
-        .from('room_members')
-        .select('user_id')
-        .eq('room_id', room_id)
-        .eq('user_id', user_id)
-        .single()
+        .from('room_members').select('user_id')
+        .eq('room_id', room_id).eq('user_id', user_id).single()
 
       if (error || !data) {
-        console.log(`[join DENIED] user=${user_id?.slice(0,8)} room=${room_id?.slice(0,8)} err=${error?.message}`)
+        console.log(`[join DENIED] user=${user_id?.slice(0,8)} room=${room_id?.slice(0,8)}`)
         ws.send(JSON.stringify({ type: 'error', message: 'Not a room member' }))
         return
       }
@@ -136,8 +175,19 @@ wss.on('connection', ws => {
       try {
         await handleVote(ws, roomId, userId, voting_session_id, game_id)
       } catch (err) {
-        console.error('[vote error]', err.message, err.stack)
+        console.error('[vote error]', err.message)
       }
+      return
+    }
+
+    // ── CANCEL VOTE ───────────────────────────────────────────────────
+    if (msg.type === 'cancel_vote') {
+      try {
+        await handleCancelVote(ws, roomId, userId)
+      } catch (err) {
+        console.error('[cancel_vote error]', err.message)
+      }
+      return
     }
   })
 

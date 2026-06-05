@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
-  ArrowLeft, Wifi, WifiOff, Trophy, Gamepad2, Users, Zap,
+  ArrowLeft, Wifi, WifiOff, Trophy, Gamepad2, Users, Zap, XCircle,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
@@ -12,51 +12,61 @@ export default function VotingScreen() {
   const { user } = useAuth()
   const navigate = useNavigate()
 
-  const [room, setRoom]         = useState(null)
-  const [session, setSession]   = useState(null)
+  const [room, setRoom]       = useState(null)
+  const [session, setSession] = useState(null)
   const [shortlist, setShortlist] = useState([])
-  const [members, setMembers]   = useState([])
-  const [loading, setLoading]   = useState(true)
+  const [members, setMembers] = useState([])
+  const [loading, setLoading] = useState(true)
+  const abortRef              = useRef(null)
 
-  const { connected, tallies, winner, hasVoted, castVote } =
+  const { connected, tallies, winner, hasVoted, voteCancelled, castVote, cancelVote } =
     useVotingWS(id, user?.id)
+
+  useEffect(() => {
+    return () => abortRef.current?.abort()
+  }, [])
 
   useEffect(() => {
     if (user) loadData()
   }, [id, user])
 
   async function loadData() {
-    const [
-      { data: roomData },
-      { data: sessionData },
-      { data: shortlistData },
-      { data: membersData },
-    ] = await Promise.all([
-      supabase.from('rooms').select('*').eq('id', id).single(),
-      supabase
-        .from('voting_sessions')
-        .select('*')
-        .eq('room_id', id)
-        .is('ended_at', null)
-        .order('started_at', { ascending: false })
-        .limit(1)
-        .single(),
-      supabase.rpc('get_shortlist', { p_room_id: id }),
-      supabase.rpc('get_room_members', { p_room_id: id }),
-    ])
+    abortRef.current?.abort()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+    const sig = ctrl.signal
 
-    // No active session → back to lobby
-    if (!roomData || !sessionData) {
+    try {
+      const [r0, r1, r2, r3] = await Promise.all([
+        supabase.from('rooms').select('*').eq('id', id).single().abortSignal(sig),
+        supabase
+          .from('voting_sessions').select('*').eq('room_id', id).is('ended_at', null)
+          .order('started_at', { ascending: false }).limit(1).single().abortSignal(sig),
+        supabase.rpc('get_shortlist',     { p_room_id: id }).abortSignal(sig),
+        supabase.rpc('get_room_members',  { p_room_id: id }).abortSignal(sig),
+      ])
+
+      if (sig.aborted) return
+
+      if (!r0.data || !r1.data) { navigate(`/rooms/${id}`); return }
+
+      setRoom(r0.data)
+      setSession(r1.data)
+      setShortlist(r2.data ?? [])
+      setMembers(r3.data ?? [])
+      setLoading(false)
+    } catch (err) {
+      if (sig.aborted || err?.name === 'AbortError') return
       navigate(`/rooms/${id}`)
-      return
     }
-
-    setRoom(roomData)
-    setSession(sessionData)
-    setShortlist(shortlistData ?? [])
-    setMembers(membersData ?? [])
-    setLoading(false)
   }
+
+  const isHost = room?.host_id === user?.id
+
+  // Navigate everyone back to lobby when host cancels the vote
+  useEffect(() => {
+    if (voteCancelled) navigate(`/rooms/${id}`)
+  }, [voteCancelled])
 
   const majority   = Math.ceil(members.length / 2)
   const totalVotes = tallies.reduce((sum, t) => sum + t.votes, 0)
@@ -88,13 +98,24 @@ export default function VotingScreen() {
               <p className="text-xs text-slate-500">Live Vote in Progress</p>
             </div>
           </div>
-          <div className={`flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-full border ${
-            connected
-              ? 'bg-green-500/10 border-green-500/20 text-green-400'
-              : 'bg-white/[0.05] border-white/[0.08] text-slate-500'
-          }`}>
-            {connected ? <Wifi size={12} /> : <WifiOff size={12} />}
-            {connected ? 'Live' : 'Connecting…'}
+          <div className="flex items-center gap-2">
+            {isHost && winner == null && (
+              <button
+                onClick={cancelVote}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium
+                  bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500/20 transition-all"
+              >
+                <XCircle size={12} /> Cancel Vote
+              </button>
+            )}
+            <div className={`flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-full border ${
+              connected
+                ? 'bg-green-500/10 border-green-500/20 text-green-400'
+                : 'bg-white/[0.05] border-white/[0.08] text-slate-500'
+            }`}>
+              {connected ? <Wifi size={12} /> : <WifiOff size={12} />}
+              {connected ? 'Live' : 'Connecting…'}
+            </div>
           </div>
         </div>
 
@@ -157,7 +178,7 @@ export default function VotingScreen() {
       {winnerGame && (
         <WinnerModal
           game={winnerGame}
-          onContinue={() => navigate(`/rooms/${id}`)}
+          onContinue={() => navigate(`/rooms/${id}/session`)}
         />
       )}
     </div>
@@ -177,15 +198,10 @@ function VoteCard({ game, votes, pct, isLeading, isWinner, hasVoted, connected, 
           : 'border-white/[0.08] hover:border-white/15'
     }`}>
       <div className="flex items-center gap-4">
-        {/* Cover */}
         <div className="w-20 h-12 rounded-xl overflow-hidden bg-white/[0.04] flex-shrink-0">
           {game.cover_url && !imgError ? (
-            <img
-              src={game.cover_url}
-              alt={game.title}
-              className="w-full h-full object-cover"
-              onError={() => setImgError(true)}
-            />
+            <img src={game.cover_url} alt={game.title} className="w-full h-full object-cover"
+              onError={() => setImgError(true)} />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
               <Gamepad2 size={16} className="text-slate-700" />
@@ -193,33 +209,22 @@ function VoteCard({ game, votes, pct, isLeading, isWinner, hasVoted, connected, 
           )}
         </div>
 
-        {/* Info */}
         <div className="flex-1 min-w-0">
-          <p className="font-display font-semibold text-sm text-white line-clamp-1 mb-1">
-            {game.title}
-          </p>
+          <p className="font-display font-semibold text-sm text-white line-clamp-1 mb-1">{game.title}</p>
           <div className="flex items-center gap-1.5 flex-wrap">
             {(game.genres ?? []).slice(0, 2).map(g => (
-              <span key={g} className="text-[10px] text-slate-600 bg-white/[0.04] px-1.5 py-0.5 rounded">
-                {g}
-              </span>
+              <span key={g} className="text-[10px] text-slate-600 bg-white/[0.04] px-1.5 py-0.5 rounded">{g}</span>
             ))}
           </div>
         </div>
 
-        {/* Vote count */}
         <div className="flex-shrink-0 text-right min-w-[40px]">
           <p className={`font-display font-bold text-xl leading-none ${
             isWinner ? 'text-yellow-400' : isLeading ? 'text-primary' : 'text-white'
-          }`}>
-            {votes}
-          </p>
-          <p className="text-[10px] text-slate-600 mt-0.5">
-            vote{votes !== 1 ? 's' : ''}
-          </p>
+          }`}>{votes}</p>
+          <p className="text-[10px] text-slate-600 mt-0.5">vote{votes !== 1 ? 's' : ''}</p>
         </div>
 
-        {/* Vote button */}
         {!voteEnded && (
           <button
             onClick={onVote}
@@ -237,16 +242,13 @@ function VoteCard({ game, votes, pct, isLeading, isWinner, hasVoted, connected, 
         )}
       </div>
 
-      {/* Vote bar */}
       <div className="mt-3">
         <div className="h-1.5 bg-white/[0.05] rounded-full overflow-hidden">
           <div
             className={`h-full rounded-full transition-all duration-500 ease-out ${
-              isWinner
-                ? 'bg-gradient-to-r from-yellow-400 to-amber-400'
-                : isLeading
-                  ? 'bg-gradient-to-r from-primary to-secondary'
-                  : 'bg-white/20'
+              isWinner ? 'bg-gradient-to-r from-yellow-400 to-amber-400'
+                : isLeading ? 'bg-gradient-to-r from-primary to-secondary'
+                : 'bg-white/20'
             }`}
             style={{ width: `${pct}%` }}
           />
@@ -265,7 +267,6 @@ function WinnerModal({ game, onContinue }) {
       bg-background/80 backdrop-blur-md">
       <div className="glass rounded-3xl p-8 border border-yellow-400/30 max-w-sm w-full text-center
         shadow-[0_0_80px_rgba(250,204,21,0.2)] animate-slide-up">
-
         <div className="flex items-center justify-center gap-2 mb-2">
           <Trophy size={22} className="text-yellow-400" />
           <span className="font-display font-bold text-xl text-white">Winner!</span>
@@ -274,12 +275,8 @@ function WinnerModal({ game, onContinue }) {
 
         <div className="w-full aspect-video rounded-2xl overflow-hidden bg-white/[0.04] mb-5">
           {game.cover_url && !imgError ? (
-            <img
-              src={game.cover_url}
-              alt={game.title}
-              className="w-full h-full object-cover"
-              onError={() => setImgError(true)}
-            />
+            <img src={game.cover_url} alt={game.title} className="w-full h-full object-cover"
+              onError={() => setImgError(true)} />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
               <Gamepad2 size={32} className="text-slate-700" />
@@ -288,24 +285,18 @@ function WinnerModal({ game, onContinue }) {
         </div>
 
         <h2 className="font-display font-bold text-2xl text-white mb-2">{game.title}</h2>
-
         <div className="flex items-center justify-center gap-2 flex-wrap mb-6">
           {(game.genres ?? []).slice(0, 3).map(g => (
-            <span key={g}
-              className="text-[11px] text-slate-500 bg-white/[0.05] border border-white/[0.08]
-                px-2.5 py-0.5 rounded-full">
+            <span key={g} className="text-[11px] text-slate-500 bg-white/[0.05] border border-white/[0.08] px-2.5 py-0.5 rounded-full">
               {g}
             </span>
           ))}
         </div>
 
-        <button
-          onClick={onContinue}
-          className="btn-primary w-full py-3 flex items-center justify-center gap-2"
-        >
-          <Users size={16} />
-          Let's Play!
+        <button onClick={onContinue} className="btn-primary w-full py-3 flex items-center justify-center gap-2">
+          <Users size={16} /> Let's Play!
         </button>
+        <p className="text-slate-600 text-xs mt-3">Taking you to the session…</p>
       </div>
     </div>
   )

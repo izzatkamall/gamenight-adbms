@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Hash, ChevronRight, Gamepad2, Library } from 'lucide-react'
 import { supabase } from '../lib/supabase'
@@ -10,18 +10,40 @@ export default function Dashboard() {
   const navigate = useNavigate()
   const [rooms, setRooms]     = useState([])
   const [loading, setLoading] = useState(true)
+  const abortRef              = useRef(null)
+
+  useEffect(() => {
+    return () => abortRef.current?.abort()
+  }, [])
 
   useEffect(() => {
     if (user) fetchRooms()
   }, [user])
 
+  useEffect(() => {
+    if (!user) return
+    const channel = supabase
+      .channel('dashboard-rooms')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms' },
+        () => fetchRooms()
+      )
+      .subscribe()
+    return () => supabase.removeChannel(channel)
+  }, [user])
+
   async function fetchRooms() {
-    const { data } = await supabase
-      .from('rooms')
-      .select('*')
-      .order('created_at', { ascending: false })
-    setRooms(data ?? [])
-    setLoading(false)
+    abortRef.current?.abort()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+    try {
+      const { data } = await supabase
+        .from('rooms').select('*').order('created_at', { ascending: false })
+        .abortSignal(ctrl.signal)
+      if (!ctrl.signal.aborted) {
+        setRooms(data ?? [])
+        setLoading(false)
+      }
+    } catch { /* aborted */ }
   }
 
   return (

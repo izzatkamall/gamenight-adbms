@@ -489,8 +489,8 @@ Members: user_id (prevents double-voting)
 | 2 | Auth & Profiles | Register, login, profile trigger working | ✅ Complete — tagged phase-2 |
 | 3 | Libraries & Rooms | Common library intersection query working | ✅ Complete — tagged phase-3 |
 | 4 | Preference Profiles | JSONB profiles updating, shortlist ranking working | ✅ Complete — tagged phase-4 |
-| 5 | Live Voting | Redis voting with real-time WebSocket updates | Not started |
-| 6 | Session History | Full session logging and rating flow | Not started |
+| 5 | Live Voting | Redis voting with real-time WebSocket updates | ✅ Complete — tagged phase-5 |
+| 6 | Session History | Full session logging and rating flow | ✅ Complete — tagged phase-6 |
 | 7 | Polish & GitHub | Styled app pushed to public repo | Not started |
 
 ### Advanced DBMS Concepts Demonstrated

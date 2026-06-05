@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Copy, Check, Users, Gamepad2, Clock, Crown, X, AlertCircle, TrendingUp, Star, Vote } from 'lucide-react'
+import { Copy, Check, Users, Gamepad2, Clock, Crown, X, AlertCircle, TrendingUp, Star, Vote, History } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
 import Avatar from '../components/ui/Avatar'
@@ -10,30 +10,34 @@ export default function RoomLobby() {
   const { user } = useAuth()
   const navigate = useNavigate()
 
-  const [room, setRoom]           = useState(null)
-  const [members, setMembers]     = useState([])
-  const [games, setGames]         = useState([])
-  const [shortlist, setShortlist] = useState([])
-  const [ratings, setRatings]     = useState({})
-  const [loading, setLoading]     = useState(true)
-  const [notFound, setNotFound]   = useState(false)
-  const [copied, setCopied]       = useState(false)
-  const [closing, setClosing]           = useState(false)
-  const [startingVote, setStartingVote] = useState(false)
+  const [room, setRoom]                     = useState(null)
+  const [members, setMembers]               = useState([])
+  const [games, setGames]                   = useState([])
+  const [shortlist, setShortlist]           = useState([])
+  const [sessionHistory, setSessionHistory] = useState([])
+  const [ratings, setRatings]               = useState({})
+  const [loading, setLoading]               = useState(true)
+  const [notFound, setNotFound]             = useState(false)
+  const [copied, setCopied]                 = useState(false)
+  const [closing, setClosing]               = useState(false)
+  const [startingVote, setStartingVote]     = useState(false)
+
+  const loadAbortRef = useRef(null)
+  const pollAbortRef = useRef(null)
+
+  // Abort all in-flight requests on unmount
+  useEffect(() => {
+    return () => {
+      loadAbortRef.current?.abort()
+      pollAbortRef.current?.abort()
+    }
+  }, [])
 
   useEffect(() => {
     if (user) loadRoom()
   }, [id, user])
 
-  useEffect(() => {
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible' && user) loadRoom()
-    }
-    document.addEventListener('visibilitychange', handleVisibility)
-    return () => document.removeEventListener('visibilitychange', handleVisibility)
-  }, [user, id])
-
-  // Supabase Realtime — navigate all room members when voting starts
+  // Realtime subscription for room status changes
   useEffect(() => {
     if (!id) return
     const channel = supabase
@@ -42,48 +46,92 @@ export default function RoomLobby() {
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `id=eq.${id}` },
         payload => {
-          if (payload.new?.status === 'voting') {
-            navigate(`/rooms/${id}/vote`)
-          }
+          if (payload.new?.status === 'voting')         navigate(`/rooms/${id}/vote`)
+          if (payload.new?.status === 'session_active') navigate(`/rooms/${id}/session`)
+          if (payload.new?.status === 'open' && payload.old?.status === 'session_active') reloadHistory()
         }
       )
       .subscribe()
     return () => { supabase.removeChannel(channel) }
   }, [id])
 
-  async function loadRoom() {
-    setLoading(true)
-    const [
-      { data: roomData },
-      { data: membersData },
-      { data: gamesData },
-      { data: shortlistData },
-    ] = await Promise.all([
-      supabase.from('rooms').select('*').eq('id', id).single(),
-      supabase.rpc('get_room_members', { p_room_id: id }),
-      supabase.rpc('get_common_games',  { p_room_id: id }),
-      supabase.rpc('get_shortlist',     { p_room_id: id }),
-    ])
+  // Polling fallback — aborts the previous request before firing a new one
+  // so requests never accumulate in the browser connection pool.
+  useEffect(() => {
+    if (!id || !user) return
+    const interval = setInterval(async () => {
+      pollAbortRef.current?.abort()
+      pollAbortRef.current = new AbortController()
+      try {
+        const { data } = await supabase
+          .from('rooms').select('status').eq('id', id).single()
+          .abortSignal(pollAbortRef.current.signal)
+        if (data?.status === 'voting')         navigate(`/rooms/${id}/vote`)
+        if (data?.status === 'session_active') navigate(`/rooms/${id}/session`)
+      } catch { /* aborted or network error — next tick will retry */ }
+    }, 2000)
+    return () => {
+      clearInterval(interval)
+      pollAbortRef.current?.abort()
+    }
+  }, [id, user])
 
-    if (!roomData) { setNotFound(true); setLoading(false); return }
+  async function reloadHistory() {
+    try {
+      const { data } = await supabase.rpc('get_session_history', { p_room_id: id })
+      if (data) setSessionHistory(data)
+    } catch { /* ignore */ }
+  }
 
-    setRoom(roomData)
-    setMembers(membersData ?? [])
-    setGames(gamesData ?? [])
-    setShortlist(shortlistData ?? [])
-    setLoading(false)
+  async function loadRoom(silent = false) {
+    // Cancel any previous in-flight loadRoom
+    loadAbortRef.current?.abort()
+    const ctrl = new AbortController()
+    loadAbortRef.current = ctrl
+    const sig = ctrl.signal
+
+    if (!silent) setLoading(true)
+
+    try {
+      const [r0, r1, r2, r3, r4] = await Promise.all([
+        supabase.from('rooms').select('*').eq('id', id).single().abortSignal(sig),
+        supabase.rpc('get_room_members',    { p_room_id: id }).abortSignal(sig),
+        supabase.rpc('get_common_games',    { p_room_id: id }).abortSignal(sig),
+        supabase.rpc('get_shortlist',       { p_room_id: id }).abortSignal(sig),
+        supabase.rpc('get_session_history', { p_room_id: id }).abortSignal(sig),
+      ])
+
+      if (sig.aborted) return
+
+      const roomData = r0.data
+      if (!roomData) { setNotFound(true); if (!silent) setLoading(false); return }
+      if (roomData.status === 'voting')         { navigate(`/rooms/${id}/vote`);    return }
+      if (roomData.status === 'session_active') { navigate(`/rooms/${id}/session`); return }
+
+      setRoom(roomData)
+      setMembers(r1.data ?? [])
+      setGames(r2.data ?? [])
+      setShortlist(r3.data ?? [])
+      setSessionHistory(r4.data ?? [])
+      if (!silent) setLoading(false)
+    } catch (err) {
+      if (sig.aborted || err?.name === 'AbortError') return
+      console.error('[loadRoom]', err.message)
+      if (!silent) setLoading(false)
+    }
   }
 
   async function rateGame(gameId, rating) {
-    await supabase.rpc('update_user_preferences', {
-      p_user_id: user.id,
-      p_game_id: gameId,
-      p_rating:  rating,
-    })
     setRatings(prev => ({ ...prev, [gameId]: rating }))
-    // Re-rank the shortlist after a new rating
-    const { data } = await supabase.rpc('get_shortlist', { p_room_id: id })
-    if (data) setShortlist(data)
+    try {
+      await supabase.rpc('update_user_preferences', {
+        p_user_id: user.id,
+        p_game_id: gameId,
+        p_rating:  rating,
+      })
+      const { data } = await supabase.rpc('get_shortlist', { p_room_id: id })
+      if (data) setShortlist(data)
+    } catch { /* ignore */ }
   }
 
   async function copyCode() {
@@ -103,19 +151,11 @@ export default function RoomLobby() {
     if (shortlist.length === 0) return
     setStartingVote(true)
 
-    // Create voting session
     const { data: vsData, error } = await supabase
-      .from('voting_sessions')
-      .insert({ room_id: id })
-      .select('id')
-      .single()
+      .from('voting_sessions').insert({ room_id: id }).select('id').single()
 
-    if (error || !vsData) {
-      setStartingVote(false)
-      return
-    }
+    if (error || !vsData) { setStartingVote(false); return }
 
-    // Flip room to 'voting' — Realtime subscription will navigate everyone
     await supabase.from('rooms').update({ status: 'voting' }).eq('id', id)
     setStartingVote(false)
   }
@@ -170,6 +210,14 @@ export default function RoomLobby() {
                   className="flex items-center gap-1.5 px-4 py-2 rounded-xl btn-primary text-sm font-semibold"
                 >
                   <Vote size={14} /> Join Vote
+                </button>
+              )}
+              {room.status === 'session_active' && (
+                <button
+                  onClick={() => navigate(`/rooms/${id}/session`)}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl btn-primary text-sm font-semibold"
+                >
+                  <Gamepad2 size={14} /> Rejoin Session
                 </button>
               )}
               {isHost && room.status === 'open' && shortlist.length > 0 && (
@@ -283,6 +331,25 @@ export default function RoomLobby() {
                 </div>
               )}
             </div>
+
+            {/* Session History */}
+            {sessionHistory.length > 0 && (
+              <div>
+                <div className="flex items-center gap-2 mb-4">
+                  <History size={16} className="text-slate-500" />
+                  <h2 className="font-display font-semibold text-white">Session History</h2>
+                  <span className="text-xs text-slate-600 bg-white/[0.04] border border-white/[0.07]
+                    px-2 py-0.5 rounded-full">
+                    {sessionHistory.length}
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {sessionHistory.map(s => (
+                    <SessionHistoryRow key={s.session_id} session={s} />
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -400,6 +467,54 @@ function StarRating({ gameId, currentRating, onRate }) {
           <Star size={12} fill={n <= active ? 'currentColor' : 'none'} />
         </button>
       ))}
+    </div>
+  )
+}
+
+/* ── Session history row ───────────────────────────────────────── */
+function SessionHistoryRow({ session }) {
+  const [imgError, setImgError] = useState(false)
+
+  const date     = new Date(session.started_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  const duration = session.duration_minutes
+    ? session.duration_minutes >= 60
+      ? `${Math.floor(session.duration_minutes / 60)}h ${session.duration_minutes % 60}m`
+      : `${session.duration_minutes}m`
+    : '—'
+
+  return (
+    <div className="glass rounded-xl p-3 border border-white/[0.07] flex items-center gap-3
+      hover:border-white/10 transition-all">
+      <div className="w-14 h-9 rounded-lg overflow-hidden bg-white/[0.04] flex-shrink-0">
+        {session.cover_url && !imgError ? (
+          <img src={session.cover_url} alt={session.title}
+            className="w-full h-full object-cover"
+            onError={() => setImgError(true)} />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <Gamepad2 size={12} className="text-slate-700" />
+          </div>
+        )}
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <p className="font-display font-semibold text-sm text-white line-clamp-1">{session.title}</p>
+        <p className="text-[11px] text-slate-600 mt-0.5">{date} · {duration}</p>
+      </div>
+
+      {session.avg_rating && (
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <Star size={11} className="text-yellow-400" fill="currentColor" />
+          <span className="text-xs font-medium text-slate-400">{session.avg_rating}</span>
+        </div>
+      )}
+
+      {session.my_rating && (
+        <div className="flex-shrink-0 text-[10px] px-2 py-0.5 rounded-full
+          bg-primary/10 border border-primary/20 text-primary font-medium">
+          You: {session.my_rating}★
+        </div>
+      )}
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { User, Mail, Calendar, Edit3, Check, X, TrendingUp, Clock, Gamepad2, Star } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
@@ -11,14 +11,26 @@ export default function Profile() {
   const [saving, setSaving]                   = useState(false)
   const [saveError, setSaveError]             = useState(null)
   const [stats, setStats]                     = useState(null)
+  const abortRef                              = useRef(null)
+
+  useEffect(() => {
+    return () => abortRef.current?.abort()
+  }, [])
 
   useEffect(() => {
     if (user) fetchStats()
   }, [user])
 
   async function fetchStats() {
-    const { data } = await supabase.rpc('get_user_stats', { p_user_id: user.id })
-    if (data?.[0]) setStats(data[0])
+    abortRef.current?.abort()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+    try {
+      const { data } = await supabase
+        .rpc('get_user_stats', { p_user_id: user.id })
+        .abortSignal(ctrl.signal)
+      if (!ctrl.signal.aborted && data?.[0]) setStats(data[0])
+    } catch { /* aborted */ }
   }
 
   function startEdit() {
@@ -66,8 +78,6 @@ export default function Profile() {
     .sort(([, a], [, b]) => b - a)
     .slice(0, 6)
 
-  const totalSessions = profile?.preferences?.total_sessions ?? 0
-
   return (
     <div className="min-h-screen bg-background pt-24 pb-16 px-6 relative overflow-hidden">
       <div className="glow-orb-violet" style={{ top: '-200px', right: '-200px', opacity: 0.3 }} />
@@ -79,7 +89,6 @@ export default function Profile() {
             <Avatar username={profile?.username} size="xl" />
 
             <div className="flex-1 min-w-0">
-              {/* Username */}
               <div className="flex items-center gap-3 mb-1">
                 {editingUsername ? (
                   <div className="flex items-center gap-2 flex-1">
@@ -118,11 +127,8 @@ export default function Profile() {
                 )}
               </div>
 
-              {saveError && (
-                <p className="text-red-400 text-xs mb-2">{saveError}</p>
-              )}
+              {saveError && <p className="text-red-400 text-xs mb-2">{saveError}</p>}
 
-              {/* Meta info */}
               <div className="flex flex-wrap gap-x-5 gap-y-1.5 text-sm text-slate-500">
                 <span className="flex items-center gap-1.5">
                   <Mail size={13} className="text-slate-600" />
@@ -141,27 +147,10 @@ export default function Profile() {
 
         {/* Stats row */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
-          <StatCard
-            icon={<Gamepad2 size={18} />}
-            label="Sessions"
-            value={stats?.total_sessions ?? totalSessions}
-          />
-          <StatCard
-            icon={<Clock size={18} />}
-            label="Hours Played"
-            value={stats?.total_hours ?? '–'}
-          />
-          <StatCard
-            icon={<Star size={18} />}
-            label="Avg Rating"
-            value={stats?.avg_rating_given ? `${stats.avg_rating_given} / 5` : '–'}
-          />
-          <StatCard
-            icon={<TrendingUp size={18} />}
-            label="Top Game"
-            value={stats?.most_played_game ?? '–'}
-            small
-          />
+          <StatCard icon={<Gamepad2 size={18} />} label="Sessions"    value={stats?.total_sessions ?? '–'} />
+          <StatCard icon={<Clock size={18} />}    label="Hours Played" value={stats?.total_hours ?? '–'} />
+          <StatCard icon={<Star size={18} />}     label="Avg Rating"   value={stats?.avg_rating_given ? `${stats.avg_rating_given} / 5` : '–'} />
+          <StatCard icon={<TrendingUp size={18} />} label="Top Game"   value={stats?.most_played_game ?? '–'} small />
         </div>
 
         {/* Genre preferences */}

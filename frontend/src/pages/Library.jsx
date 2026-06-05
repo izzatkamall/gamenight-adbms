@@ -1,42 +1,52 @@
-import { useState, useEffect, useMemo } from 'react'
-import { Search, Plus, Minus, Gamepad2, Users, Clock, Tag } from 'lucide-react'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { Search, Plus, Minus, Gamepad2, Users, Clock } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
 
 export default function Library() {
   const { user } = useAuth()
-  const [games, setGames]           = useState([])
-  const [ownedIds, setOwnedIds]     = useState(new Set())
-  const [search, setSearch]         = useState('')
+  const [games, setGames]               = useState([])
+  const [ownedIds, setOwnedIds]         = useState(new Set())
+  const [search, setSearch]             = useState('')
   const [loadingGames, setLoadingGames] = useState(true)
-  const [fetchError, setFetchError] = useState(null)
-  const [toggling, setToggling]     = useState(new Set())
+  const [fetchError, setFetchError]     = useState(null)
+  const [toggling, setToggling]         = useState(new Set())
+  const abortRef                        = useRef(null)
+
+  useEffect(() => {
+    return () => abortRef.current?.abort()
+  }, [])
 
   useEffect(() => {
     if (!user) return
-    Promise.all([fetchGames(), fetchLibrary()])
+    abortRef.current?.abort()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+    Promise.all([fetchGames(ctrl.signal), fetchLibrary(ctrl.signal)])
   }, [user])
 
-  async function fetchGames() {
+  async function fetchGames(signal) {
     try {
-      const { data, error } = await supabase.from('games').select('*').order('title')
+      const { data, error } = await supabase
+        .from('games').select('*').order('title')
+        .abortSignal(signal)
+      if (signal?.aborted) return
       if (error) { setFetchError(error.message); return }
       if (data) setGames(data)
     } catch (err) {
-      setFetchError(err.message ?? 'Failed to load games.')
+      if (err?.name !== 'AbortError') setFetchError(err.message ?? 'Failed to load games.')
     } finally {
-      setLoadingGames(false)
+      if (!signal?.aborted) setLoadingGames(false)
     }
   }
 
-  async function fetchLibrary() {
+  async function fetchLibrary(signal) {
     try {
       const { data } = await supabase
-        .from('user_libraries')
-        .select('game_id')
-        .eq('user_id', user.id)
-      if (data) setOwnedIds(new Set(data.map(r => r.game_id)))
-    } catch { /* library just stays empty */ }
+        .from('user_libraries').select('game_id').eq('user_id', user.id)
+        .abortSignal(signal)
+      if (!signal?.aborted && data) setOwnedIds(new Set(data.map(r => r.game_id)))
+    } catch { /* aborted or network error */ }
   }
 
   async function toggleGame(gameId) {
@@ -44,17 +54,17 @@ export default function Library() {
     setToggling(prev => new Set(prev).add(gameId))
 
     const owned = ownedIds.has(gameId)
-    if (owned) {
-      await supabase.from('user_libraries')
-        .delete()
-        .eq('user_id', user.id)
-        .eq('game_id', gameId)
-      setOwnedIds(prev => { const s = new Set(prev); s.delete(gameId); return s })
-    } else {
-      await supabase.from('user_libraries')
-        .insert({ user_id: user.id, game_id: gameId })
-      setOwnedIds(prev => new Set(prev).add(gameId))
-    }
+    try {
+      if (owned) {
+        await supabase.from('user_libraries')
+          .delete().eq('user_id', user.id).eq('game_id', gameId)
+        setOwnedIds(prev => { const s = new Set(prev); s.delete(gameId); return s })
+      } else {
+        await supabase.from('user_libraries')
+          .insert({ user_id: user.id, game_id: gameId })
+        setOwnedIds(prev => new Set(prev).add(gameId))
+      }
+    } catch { /* ignore toggle errors */ }
 
     setToggling(prev => { const s = new Set(prev); s.delete(gameId); return s })
   }
@@ -134,7 +144,6 @@ function GameCard({ game, owned, toggling, onToggle }) {
         : 'border-white/[0.07] hover:border-white/20'
       }`}
     >
-      {/* Cover image */}
       <div className="relative aspect-[16/9] bg-white/[0.04] overflow-hidden">
         {game.cover_url && !imgError ? (
           <img
@@ -148,13 +157,7 @@ function GameCard({ game, owned, toggling, onToggle }) {
             <Gamepad2 size={28} className="text-slate-700" />
           </div>
         )}
-
-        {/* Owned overlay */}
-        {owned && (
-          <div className="absolute inset-0 bg-primary/10 pointer-events-none" />
-        )}
-
-        {/* Free badge */}
+        {owned && <div className="absolute inset-0 bg-primary/10 pointer-events-none" />}
         {game.is_free && (
           <span className="absolute top-2 left-2 text-[10px] font-bold uppercase tracking-wider
             bg-green-500/20 border border-green-500/30 text-green-400 px-1.5 py-0.5 rounded">
@@ -163,12 +166,10 @@ function GameCard({ game, owned, toggling, onToggle }) {
         )}
       </div>
 
-      {/* Info */}
       <div className="p-3">
         <h3 className="font-display font-semibold text-sm text-white leading-tight mb-2 line-clamp-1">
           {game.title}
         </h3>
-
         <div className="flex flex-wrap gap-1 mb-3">
           {game.genres.slice(0, 2).map(g => (
             <span key={g} className="text-[10px] text-slate-500 bg-white/[0.05] px-1.5 py-0.5 rounded">
@@ -176,18 +177,10 @@ function GameCard({ game, owned, toggling, onToggle }) {
             </span>
           ))}
         </div>
-
         <div className="flex items-center justify-between text-[11px] text-slate-600 mb-3">
-          <span className="flex items-center gap-1">
-            <Users size={11} />
-            {game.min_players}–{game.max_players}
-          </span>
-          <span className="flex items-center gap-1">
-            <Clock size={11} />
-            {game.avg_playtime_minutes}m
-          </span>
+          <span className="flex items-center gap-1"><Users size={11} />{game.min_players}–{game.max_players}</span>
+          <span className="flex items-center gap-1"><Clock size={11} />{game.avg_playtime_minutes}m</span>
         </div>
-
         <button
           onClick={onToggle}
           disabled={toggling}
@@ -198,10 +191,7 @@ function GameCard({ game, owned, toggling, onToggle }) {
               : 'bg-white/[0.05] border border-white/10 text-slate-400 hover:bg-primary/20 hover:border-primary/30 hover:text-primary'
             }`}
         >
-          {owned
-            ? <><Minus size={11} /> Remove</>
-            : <><Plus size={11} /> Add</>
-          }
+          {owned ? <><Minus size={11} /> Remove</> : <><Plus size={11} /> Add</>}
         </button>
       </div>
     </div>
