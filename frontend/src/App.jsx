@@ -13,6 +13,7 @@ import JoinRoom   from './pages/JoinRoom'
 import RoomLobby     from './pages/RoomLobby'
 import VotingScreen   from './pages/VotingScreen'
 import SessionActive  from './pages/SessionActive'
+import Wishlist       from './pages/Wishlist'
 
 export default function App() {
   return (
@@ -31,6 +32,7 @@ export default function App() {
           <Route path="/rooms/:id"      element={<ProtectedRoute><RoomLobby /></ProtectedRoute>} />
           <Route path="/rooms/:id/vote"    element={<ProtectedRoute><VotingScreen /></ProtectedRoute>} />
           <Route path="/rooms/:id/session" element={<ProtectedRoute><SessionActive /></ProtectedRoute>} />
+          <Route path="/wishlist"          element={<ProtectedRoute><Wishlist /></ProtectedRoute>} />
         </Routes>
       </AuthProvider>
     </BrowserRouter>

@@ -31,7 +31,7 @@ export default function SessionActive() {
 
   useEffect(() => {
     if (user?.id) loadData()
-  }, [id, user?.id])  // user?.id is a stable string — won't re-fire on token refresh
+  }, [id, user?.id])
 
   // Live timer
   useEffect(() => {
@@ -65,6 +65,11 @@ export default function SessionActive() {
   }, [session?.id])
 
   async function loadData() {
+    // If the rating modal is already showing, never run loadData — it would
+    // navigate away mid-rating. This guards against auth token refresh events
+    // re-triggering this effect while the user is rating.
+    if (showRatingRef.current) return
+
     loadAbortRef.current?.abort()
     const ctrl = new AbortController()
     loadAbortRef.current = ctrl
@@ -155,6 +160,8 @@ export default function SessionActive() {
 
     clearTimeout(t)
     clearInterval(timerRef.current)
+    // Refresh materialized view in background — don't block the rating modal
+    supabase.rpc('refresh_room_stats').catch(() => {})
     setEnding(false)
     showRatingRef.current = true
     setShowRating(true)

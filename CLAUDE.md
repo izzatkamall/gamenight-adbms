@@ -493,6 +493,18 @@ Members: user_id (prevents double-voting)
 | 6 | Session History | Full session logging and rating flow | ✅ Complete — tagged phase-6 |
 | 7 | Polish & GitHub | Styled app pushed to public repo | ✅ Complete — tagged phase-7 |
 
+### Bonus Features (post Phase 7)
+
+| # | Feature | Key DB Concept | Status |
+|---|---|---|---|
+| B1 | Materialized view — room stats | `CREATE MATERIALIZED VIEW`, `REFRESH CONCURRENTLY` | ✅ Complete |
+| B2 | Window functions — room leaderboard | `DENSE_RANK() OVER (...)` | ✅ Complete |
+| B3 | Full-text search on games | `tsvector`, `websearch_to_tsquery`, GIN index, trigger | ✅ Complete |
+| B4 | Audit log with triggers | `AFTER INSERT/UPDATE` triggers, JSONB metadata | ✅ Complete |
+| B5 | Real-time room chat | Supabase Realtime, optimistic updates, `room_messages` table | ✅ Complete |
+| B6 | Rematch / Play Again button | Reuses `startVote()` — contextual UX after sessions | ✅ Complete |
+| B7 | Game Wishlist | `game_wishlists` table, `get_room_wishlist` set query, personal Wishlist page | ✅ Complete |
+
 ### Advanced DBMS Concepts Demonstrated
 
 This project must clearly demonstrate the following — these are the graded aspects:

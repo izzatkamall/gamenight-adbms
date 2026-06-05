@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Copy, Check, Users, Gamepad2, Clock, Crown, X, AlertCircle, TrendingUp, Star, Vote, History } from 'lucide-react'
+import { Copy, Check, Users, Gamepad2, Clock, Crown, X, AlertCircle, TrendingUp, Star, Vote, History, BarChart2, Trophy, Activity, UserPlus, UserMinus, PlayCircle, StopCircle, Zap, MessageSquare, Send, RotateCcw, Heart, ShoppingCart } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
 import Avatar from '../components/ui/Avatar'
@@ -15,6 +15,15 @@ export default function RoomLobby() {
   const [games, setGames]                   = useState([])
   const [shortlist, setShortlist]           = useState([])
   const [sessionHistory, setSessionHistory] = useState([])
+  const [leaderboard, setLeaderboard]       = useState([])
+  const [activity, setActivity]             = useState([])
+  const [wishlist, setWishlist]             = useState([])
+  const [roomStats, setRoomStats]           = useState(null)
+  const [messages, setMessages]             = useState([])
+  const [newMessage, setNewMessage]         = useState('')
+  const [sending, setSending]               = useState(false)
+  const chatContainerRef                    = useRef(null)
+  const membersRef                          = useRef([])
   const [ratings, setRatings]               = useState({})
   const [loading, setLoading]               = useState(true)
   const [notFound, setNotFound]             = useState(false)
@@ -55,6 +64,69 @@ export default function RoomLobby() {
     return () => { supabase.removeChannel(channel) }
   }, [id])
 
+  // Keep membersRef current so Realtime callback can resolve usernames
+  useEffect(() => { membersRef.current = members }, [members])
+
+  // Load chat history + subscribe to new messages
+  useEffect(() => {
+    if (!id) return
+    supabase.rpc('get_room_messages', { p_room_id: id })
+      .then(({ data }) => { if (data) setMessages(data) })
+
+    const channel = supabase
+      .channel(`room-chat-${id}`)
+      .on('postgres_changes', {
+        event: 'INSERT', schema: 'public', table: 'room_messages',
+        filter: `room_id=eq.${id}`,
+      }, payload => {
+        const m = payload.new
+        setMessages(prev => {
+          // Skip if already shown via optimistic update (matched by numeric id)
+          if (prev.some(msg => msg.id === m.id)) return prev
+          const username = membersRef.current.find(mem => mem.user_id === m.user_id)?.username ?? null
+          return [...prev, { id: m.id, user_id: m.user_id, username, content: m.content, created_at: m.created_at }]
+        })
+      })
+      .subscribe()
+    return () => supabase.removeChannel(channel)
+  }, [id])
+
+  // Scroll only the chat container, not the whole page
+  useEffect(() => {
+    const el = chatContainerRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [messages])
+
+  const sendMessage = useCallback(async () => {
+    const text = newMessage.trim()
+    if (!text || sending || !user) return
+    setSending(true)
+    setNewMessage('')
+
+    // Optimistic: show own message immediately without waiting for Realtime
+    const tempId = `temp-${Date.now()}`
+    const username = membersRef.current.find(m => m.user_id === user.id)?.username ?? 'You'
+    setMessages(prev => [...prev, {
+      id: tempId, user_id: user.id, username,
+      content: text, created_at: new Date().toISOString(),
+    }])
+
+    const { data } = await supabase
+      .from('room_messages')
+      .insert({ room_id: id, user_id: user.id, content: text })
+      .select('id, created_at')
+      .single()
+
+    // Swap temp id with real DB id so Realtime dedup works correctly
+    if (data) {
+      setMessages(prev => prev.map(m =>
+        m.id === tempId ? { ...m, id: data.id, created_at: data.created_at } : m
+      ))
+    }
+
+    setSending(false)
+  }, [newMessage, sending, user, id])
+
   // Polling fallback — aborts the previous request before firing a new one
   // so requests never accumulate in the browser connection pool.
   useEffect(() => {
@@ -93,12 +165,16 @@ export default function RoomLobby() {
     if (!silent) setLoading(true)
 
     try {
-      const [r0, r1, r2, r3, r4] = await Promise.all([
+      const [r0, r1, r2, r3, r4, r5, r6, r7, r8] = await Promise.all([
         supabase.from('rooms').select('*').eq('id', id).single().abortSignal(sig),
-        supabase.rpc('get_room_members',    { p_room_id: id }).abortSignal(sig),
-        supabase.rpc('get_common_games',    { p_room_id: id }).abortSignal(sig),
-        supabase.rpc('get_shortlist',       { p_room_id: id }).abortSignal(sig),
-        supabase.rpc('get_session_history', { p_room_id: id }).abortSignal(sig),
+        supabase.rpc('get_room_members',      { p_room_id: id }).abortSignal(sig),
+        supabase.rpc('get_common_games',      { p_room_id: id }).abortSignal(sig),
+        supabase.rpc('get_shortlist',         { p_room_id: id }).abortSignal(sig),
+        supabase.rpc('get_session_history',   { p_room_id: id }).abortSignal(sig),
+        supabase.rpc('get_room_stats',        { p_room_id: id }).abortSignal(sig),
+        supabase.rpc('get_room_leaderboard',  { p_room_id: id }).abortSignal(sig),
+        supabase.rpc('get_room_activity',     { p_room_id: id, p_limit: 20 }).abortSignal(sig),
+        supabase.rpc('get_room_wishlist',     { p_room_id: id }).abortSignal(sig),
       ])
 
       if (sig.aborted) return
@@ -113,6 +189,10 @@ export default function RoomLobby() {
       setGames(r2.data ?? [])
       setShortlist(r3.data ?? [])
       setSessionHistory(r4.data ?? [])
+      setRoomStats(r5.data?.[0] ?? null)
+      setLeaderboard(r6.data ?? [])
+      setActivity(r7.data ?? [])
+      setWishlist(r8.data ?? [])
       if (!silent) setLoading(false)
     } catch (err) {
       if (sig.aborted || err?.name === 'AbortError') return
@@ -245,26 +325,91 @@ export default function RoomLobby() {
           </div>
         </div>
 
+        {/* Room stats bar — powered by materialized view */}
+        {roomStats && roomStats.total_sessions > 0 && (
+          <div className="glass rounded-2xl px-6 py-4 border border-white/[0.07] mb-6
+            flex flex-wrap items-center gap-x-8 gap-y-3">
+            <div className="flex items-center gap-2 text-slate-500 text-xs font-medium uppercase tracking-widest">
+              <BarChart2 size={13} className="text-primary/60" />
+              Room Stats
+            </div>
+            <StatPill label="Sessions"     value={roomStats.total_sessions} />
+            <StatPill label="Hours Played" value={roomStats.total_hours} />
+            <StatPill label="Avg Rating"   value={roomStats.avg_group_rating > 0 ? `${roomStats.avg_group_rating} / 5` : '–'} />
+            {roomStats.most_played_game && (
+              <StatPill label="Most Played" value={roomStats.most_played_game} />
+            )}
+          </div>
+        )}
+
         <div className="grid lg:grid-cols-[280px_1fr] gap-6">
 
-          {/* Members panel */}
-          <div className="glass rounded-2xl p-6 border border-white/[0.08] h-fit">
-            <div className="flex items-center gap-2 mb-5">
-              <Users size={16} className="text-slate-500" />
-              <h2 className="font-display font-semibold text-white">Members</h2>
-            </div>
-            <div className="space-y-3">
-              {members.map(m => (
-                <div key={m.user_id} className="flex items-center gap-3">
-                  <Avatar username={m.username} size="sm" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-white truncate">{m.username}</p>
+          {/* Left sidebar: Members + Chat */}
+          <div className="flex flex-col gap-4">
+
+            {/* Members panel */}
+            <div className="glass rounded-2xl p-6 border border-white/[0.08]">
+              <div className="flex items-center gap-2 mb-5">
+                <Users size={16} className="text-slate-500" />
+                <h2 className="font-display font-semibold text-white">Members</h2>
+              </div>
+              <div className="space-y-3">
+                {members.map(m => (
+                  <div key={m.user_id} className="flex items-center gap-3">
+                    <Avatar username={m.username} size="sm" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-white truncate">{m.username}</p>
+                    </div>
+                    {room.host_id === m.user_id && (
+                      <Crown size={13} className="text-yellow-400 flex-shrink-0" />
+                    )}
                   </div>
-                  {room.host_id === m.user_id && (
-                    <Crown size={13} className="text-yellow-400 flex-shrink-0" />
-                  )}
+                ))}
+              </div>
+            </div>
+
+            {/* Chat panel */}
+            <div className="glass rounded-2xl border border-white/[0.08] flex flex-col overflow-hidden" style={{ height: '320px' }}>
+              <div className="flex items-center gap-2 px-4 py-3 border-b border-white/[0.06] flex-shrink-0">
+                <MessageSquare size={14} className="text-slate-500" />
+                <h2 className="font-display font-semibold text-sm text-white">Room Chat</h2>
+              </div>
+
+              {/* Message list — scrolls independently of the page */}
+              <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-2 min-h-0">
+                {messages.length === 0 ? (
+                  <p className="text-xs text-slate-600 text-center mt-4">No messages yet. Say hi!</p>
+                ) : messages.map(msg => (
+                  <ChatMessage
+                    key={msg.id}
+                    msg={msg}
+                    isOwn={msg.user_id === user?.id}
+                  />
+                ))}
+              </div>
+
+              {/* Input */}
+              <div className="px-3 pb-3 flex-shrink-0">
+                <div className="flex items-center gap-2">
+                  <input
+                    className="form-input flex-1 text-sm py-1.5 px-3"
+                    placeholder="Message…"
+                    value={newMessage}
+                    onChange={e => setNewMessage(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') sendMessage() }}
+                    maxLength={500}
+                  />
+                  <button
+                    onClick={sendMessage}
+                    disabled={!newMessage.trim() || sending}
+                    className="w-8 h-8 rounded-lg bg-primary/20 border border-primary/30 flex items-center
+                      justify-center text-primary hover:bg-primary/30 transition-all disabled:opacity-40
+                      disabled:cursor-not-allowed flex-shrink-0"
+                  >
+                    <Send size={13} />
+                  </button>
                 </div>
-              ))}
+              </div>
             </div>
           </div>
 
@@ -290,6 +435,25 @@ export default function RoomLobby() {
                       userRating={ratings[game.id]}
                       onRate={rateGame}
                     />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Group Wishlist — games members want but don't all own */}
+            {wishlist.length > 0 && (
+              <div className="glass rounded-2xl p-6 border border-rose-500/20">
+                <div className="flex items-center gap-2 mb-4">
+                  <Heart size={16} className="text-rose-400" fill="currentColor" />
+                  <h2 className="font-display font-semibold text-white">Group Wishlist</h2>
+                  <span className="text-xs text-slate-600 bg-white/[0.04] border border-white/[0.07]
+                    px-2 py-0.5 rounded-full ml-1">
+                    Games to unlock
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {wishlist.map(game => (
+                    <WishlistRow key={game.game_id} game={game} memberCount={members.length} />
                   ))}
                 </div>
               </div>
@@ -332,6 +496,23 @@ export default function RoomLobby() {
               )}
             </div>
 
+            {/* Leaderboard — DENSE_RANK() window function */}
+            {leaderboard.length > 0 && (
+              <div>
+                <div className="flex items-center gap-2 mb-4">
+                  <Trophy size={16} className="text-yellow-400/70" />
+                  <h2 className="font-display font-semibold text-white">Room Leaderboard</h2>
+                  <span className="text-xs text-slate-600 bg-white/[0.04] border border-white/[0.07]
+                    px-2 py-0.5 rounded-full">All time</span>
+                </div>
+                <div className="space-y-2">
+                  {leaderboard.map(entry => (
+                    <LeaderboardRow key={entry.game_id} entry={entry} />
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Session History */}
             {sessionHistory.length > 0 && (
               <div>
@@ -342,6 +523,19 @@ export default function RoomLobby() {
                     px-2 py-0.5 rounded-full">
                     {sessionHistory.length}
                   </span>
+                  {/* Rematch — host only, requires shortlist */}
+                  {isHost && room.status === 'open' && shortlist.length > 0 && (
+                    <button
+                      onClick={startVote}
+                      disabled={startingVote}
+                      className="ml-auto flex items-center gap-1.5 px-3 py-1 rounded-lg
+                        bg-secondary/15 border border-secondary/25 text-secondary text-xs font-semibold
+                        hover:bg-secondary/25 transition-all disabled:opacity-50"
+                    >
+                      <RotateCcw size={11} />
+                      {startingVote ? 'Starting…' : 'Play Again'}
+                    </button>
+                  )}
                 </div>
                 <div className="space-y-2">
                   {sessionHistory.map(s => (
@@ -352,6 +546,26 @@ export default function RoomLobby() {
             )}
           </div>
         </div>
+
+        {/* Activity Log — populated by DB triggers */}
+        {activity.length > 0 && (
+          <div className="mt-6 glass rounded-2xl p-6 border border-white/[0.07]">
+            <div className="flex items-center gap-2 mb-5">
+              <Activity size={16} className="text-slate-500" />
+              <h2 className="font-display font-semibold text-white">Activity Log</h2>
+              <span className="text-xs text-slate-600 bg-white/[0.04] border border-white/[0.07]
+                px-2 py-0.5 rounded-full">Last {activity.length}</span>
+            </div>
+            <div className="relative">
+              <div className="absolute left-3.5 top-0 bottom-0 w-px bg-white/[0.06]" />
+              <div className="space-y-4">
+                {activity.map(event => (
+                  <ActivityEvent key={event.id} event={event} />
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -515,6 +729,186 @@ function SessionHistoryRow({ session }) {
           You: {session.my_rating}★
         </div>
       )}
+    </div>
+  )
+}
+
+/* ── Wishlist row ──────────────────────────────────────────────── */
+function WishlistRow({ game, memberCount }) {
+  const [imgError, setImgError] = useState(false)
+  const missing = memberCount - game.own_count
+
+  return (
+    <div className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06]
+      hover:border-rose-500/20 transition-all">
+
+      <div className="w-14 h-9 rounded-lg overflow-hidden bg-white/[0.04] flex-shrink-0">
+        {game.cover_url && !imgError ? (
+          <img src={game.cover_url} alt={game.title}
+            className="w-full h-full object-cover"
+            onError={() => setImgError(true)} />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <Gamepad2 size={12} className="text-slate-700" />
+          </div>
+        )}
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <p className="font-display font-semibold text-sm text-white line-clamp-1">{game.title}</p>
+        <div className="flex items-center gap-3 mt-0.5 text-[11px] text-slate-600">
+          {(game.genres ?? []).slice(0, 2).map(g => <span key={g}>{g}</span>)}
+        </div>
+      </div>
+
+      {/* Wish count */}
+      <div className="flex items-center gap-1 flex-shrink-0">
+        <Heart size={10} className="text-rose-400" fill="currentColor" />
+        <span className="text-xs text-rose-400 font-medium">{game.wish_count}</span>
+      </div>
+
+      {/* Missing owners hint */}
+      <div className="flex-shrink-0 text-[10px] px-2 py-0.5 rounded-full
+        bg-amber-500/10 border border-amber-500/20 text-amber-400 font-medium">
+        {missing === 1 ? '1 member missing' : `${missing} missing`}
+      </div>
+    </div>
+  )
+}
+
+/* ── Chat message ──────────────────────────────────────────────── */
+function ChatMessage({ msg, isOwn }) {
+  const name = msg.username ?? (isOwn ? 'You' : '…')
+  const time = new Date(msg.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+
+  return (
+    <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
+      <div className="flex items-baseline gap-1.5 mb-0.5">
+        <span className={`text-[10px] font-medium ${isOwn ? 'text-primary' : 'text-slate-500'}`}>{name}</span>
+        <span className="text-[10px] text-slate-700">{time}</span>
+      </div>
+      <div className={`max-w-[90%] px-3 py-1.5 rounded-xl text-xs leading-relaxed break-words ${
+        isOwn
+          ? 'bg-primary/20 border border-primary/25 text-white rounded-tr-sm'
+          : 'bg-white/[0.06] border border-white/[0.08] text-slate-300 rounded-tl-sm'
+      }`}>
+        {msg.content}
+      </div>
+    </div>
+  )
+}
+
+/* ── Activity event ────────────────────────────────────────────── */
+const EVENT_CONFIG = {
+  member_joined:   { icon: UserPlus,    color: 'text-green-400',   bg: 'bg-green-400/10' },
+  member_left:     { icon: UserMinus,   color: 'text-slate-500',   bg: 'bg-white/[0.05]' },
+  vote_started:    { icon: Zap,         color: 'text-primary',     bg: 'bg-primary/10'   },
+  vote_ended:      { icon: Trophy,      color: 'text-yellow-400',  bg: 'bg-yellow-400/10'},
+  session_started: { icon: PlayCircle,  color: 'text-secondary',   bg: 'bg-secondary/10' },
+  session_ended:   { icon: StopCircle,  color: 'text-slate-400',   bg: 'bg-white/[0.05]' },
+}
+
+function eventLabel(event) {
+  const m = event.metadata ?? {}
+  switch (event.event_type) {
+    case 'member_joined':   return `${event.username ?? 'Someone'} joined the room`
+    case 'member_left':     return `${event.username ?? 'Someone'} left the room`
+    case 'vote_started':    return 'A vote was started'
+    case 'vote_ended':      return `Vote ended — ${m.game_title ?? 'a game'} won`
+    case 'session_started': return `${m.game_title ?? 'A game'} session started`
+    case 'session_ended':   return `${m.game_title ?? 'Session'} ended${m.duration_minutes ? ` · ${m.duration_minutes}m` : ''}`
+    default: return event.event_type
+  }
+}
+
+function ActivityEvent({ event }) {
+  const cfg   = EVENT_CONFIG[event.event_type] ?? EVENT_CONFIG.member_joined
+  const Icon  = cfg.icon
+  const time  = new Date(event.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+  const date  = new Date(event.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+
+  return (
+    <div className="flex items-start gap-3 pl-0.5">
+      <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 ${cfg.bg} relative z-10`}>
+        <Icon size={13} className={cfg.color} />
+      </div>
+      <div className="flex-1 min-w-0 pt-0.5">
+        <p className="text-sm text-slate-300">{eventLabel(event)}</p>
+      </div>
+      <span className="text-[11px] text-slate-600 flex-shrink-0 pt-0.5">{date} {time}</span>
+    </div>
+  )
+}
+
+/* ── Leaderboard row ───────────────────────────────────────────── */
+function LeaderboardRow({ entry }) {
+  const [imgError, setImgError] = useState(false)
+
+  const medalColor = {
+    1: 'text-yellow-400',
+    2: 'text-slate-400',
+    3: 'text-amber-600',
+  }
+  const medalBg = {
+    1: 'bg-yellow-400/10 border-yellow-400/25',
+    2: 'bg-slate-400/10 border-slate-400/20',
+    3: 'bg-amber-600/10 border-amber-600/20',
+  }
+
+  return (
+    <div className="glass rounded-xl p-3 border border-white/[0.07] flex items-center gap-3
+      hover:border-white/10 transition-all">
+
+      {/* Rank badge */}
+      <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 border text-xs font-bold
+        ${medalBg[entry.rank] ?? 'bg-white/[0.04] border-white/[0.08] text-slate-500'}`}>
+        <span className={medalColor[entry.rank] ?? 'text-slate-500'}>#{entry.rank}</span>
+      </div>
+
+      {/* Cover */}
+      <div className="w-14 h-9 rounded-lg overflow-hidden bg-white/[0.04] flex-shrink-0">
+        {entry.cover_url && !imgError ? (
+          <img src={entry.cover_url} alt={entry.title}
+            className="w-full h-full object-cover"
+            onError={() => setImgError(true)} />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <Gamepad2 size={12} className="text-slate-700" />
+          </div>
+        )}
+      </div>
+
+      {/* Info */}
+      <div className="flex-1 min-w-0">
+        <p className="font-display font-semibold text-sm text-white line-clamp-1">{entry.title}</p>
+        <div className="flex items-center gap-3 mt-0.5 text-[11px] text-slate-600">
+          <span>{entry.play_count} session{entry.play_count !== 1 ? 's' : ''}</span>
+          {entry.times_won_vote > 0 && (
+            <span className="flex items-center gap-0.5">
+              <Trophy size={9} className="text-yellow-500/60" />
+              {entry.times_won_vote} vote{entry.times_won_vote !== 1 ? 's' : ''} won
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Avg rating */}
+      {entry.avg_rating && (
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <Star size={11} className="text-yellow-400" fill="currentColor" />
+          <span className="text-xs font-medium text-slate-400">{entry.avg_rating}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ── Stat pill ─────────────────────────────────────────────────── */
+function StatPill({ label, value }) {
+  return (
+    <div className="flex items-baseline gap-1.5">
+      <span className="font-display font-bold text-white text-sm">{value}</span>
+      <span className="text-slate-600 text-xs">{label}</span>
     </div>
   )
 }

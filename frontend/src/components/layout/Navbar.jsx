@@ -1,5 +1,5 @@
 import { Link, useNavigate, useLocation } from 'react-router-dom'
-import { Gamepad2, LayoutDashboard, User, LogOut, LogIn, UserPlus } from 'lucide-react'
+import { Gamepad2, LayoutDashboard, User, LogOut, LogIn, UserPlus, Heart } from 'lucide-react'
 import { useAuth } from '../../hooks/useAuth'
 
 export default function Navbar() {
@@ -34,6 +34,10 @@ export default function Navbar() {
               <NavLink to="/dashboard" active={isActive('/dashboard')}>
                 <LayoutDashboard size={15} />
                 Dashboard
+              </NavLink>
+              <NavLink to="/wishlist" active={isActive('/wishlist')}>
+                <Heart size={15} className={isActive('/wishlist') ? 'text-rose-400' : ''} />
+                Wishlist
               </NavLink>
               <NavLink to="/profile" active={isActive('/profile')}>
                 <User size={15} />

@@ -1,20 +1,27 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
-import { Search, Plus, Minus, Gamepad2, Users, Clock } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Search, Plus, Minus, Gamepad2, Users, Clock, X, Heart } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../hooks/useAuth'
 
 export default function Library() {
   const { user } = useAuth()
   const [games, setGames]               = useState([])
+  const [searchResults, setSearchResults] = useState(null)
   const [ownedIds, setOwnedIds]         = useState(new Set())
+  const [wishlistIds, setWishlistIds]   = useState(new Set())
   const [search, setSearch]             = useState('')
   const [loadingGames, setLoadingGames] = useState(true)
+  const [searching, setSearching]       = useState(false)
   const [fetchError, setFetchError]     = useState(null)
   const [toggling, setToggling]         = useState(new Set())
   const abortRef                        = useRef(null)
+  const debounceRef                     = useRef(null)
 
   useEffect(() => {
-    return () => abortRef.current?.abort()
+    return () => {
+      abortRef.current?.abort()
+      clearTimeout(debounceRef.current)
+    }
   }, [])
 
   useEffect(() => {
@@ -22,8 +29,28 @@ export default function Library() {
     abortRef.current?.abort()
     const ctrl = new AbortController()
     abortRef.current = ctrl
-    Promise.all([fetchGames(ctrl.signal), fetchLibrary(ctrl.signal)])
+    Promise.all([fetchGames(ctrl.signal), fetchLibrary(ctrl.signal), fetchWishlist(ctrl.signal)])
   }, [user])
+
+  // Debounced FTS — fires 300 ms after the user stops typing
+  useEffect(() => {
+    clearTimeout(debounceRef.current)
+
+    if (!search.trim()) {
+      setSearchResults(null)  // back to full catalog
+      return
+    }
+
+    debounceRef.current = setTimeout(async () => {
+      setSearching(true)
+      try {
+        const { data, error } = await supabase
+          .rpc('search_games', { p_query: search.trim() })
+        if (!error) setSearchResults(data ?? [])
+      } catch { /* ignore */ }
+      setSearching(false)
+    }, 300)
+  }, [search])
 
   async function fetchGames(signal) {
     try {
@@ -46,7 +73,27 @@ export default function Library() {
         .from('user_libraries').select('game_id').eq('user_id', user.id)
         .abortSignal(signal)
       if (!signal?.aborted && data) setOwnedIds(new Set(data.map(r => r.game_id)))
-    } catch { /* aborted or network error */ }
+    } catch { /* aborted */ }
+  }
+
+  async function fetchWishlist(signal) {
+    try {
+      const { data } = await supabase
+        .from('game_wishlists').select('game_id').eq('user_id', user.id)
+        .abortSignal(signal)
+      if (!signal?.aborted && data) setWishlistIds(new Set(data.map(r => r.game_id)))
+    } catch { /* aborted */ }
+  }
+
+  async function toggleWishlist(gameId) {
+    const wished = wishlistIds.has(gameId)
+    if (wished) {
+      await supabase.from('game_wishlists').delete().eq('user_id', user.id).eq('game_id', gameId)
+      setWishlistIds(prev => { const s = new Set(prev); s.delete(gameId); return s })
+    } else {
+      await supabase.from('game_wishlists').insert({ user_id: user.id, game_id: gameId })
+      setWishlistIds(prev => new Set(prev).add(gameId))
+    }
   }
 
   async function toggleGame(gameId) {
@@ -64,15 +111,13 @@ export default function Library() {
           .insert({ user_id: user.id, game_id: gameId })
         setOwnedIds(prev => new Set(prev).add(gameId))
       }
-    } catch { /* ignore toggle errors */ }
+    } catch { /* ignore */ }
 
     setToggling(prev => { const s = new Set(prev); s.delete(gameId); return s })
   }
 
-  const filtered = useMemo(() =>
-    games.filter(g => g.title.toLowerCase().includes(search.toLowerCase())),
-    [games, search]
-  )
+  const displayed   = searchResults ?? games
+  const isSearching = search.trim().length > 0
 
   return (
     <div className="min-h-screen bg-background pt-24 pb-16 px-6 relative overflow-hidden">
@@ -88,16 +133,39 @@ export default function Library() {
               {ownedIds.size} game{ownedIds.size !== 1 ? 's' : ''} in your library
             </p>
           </div>
+
+          {/* Search box */}
           <div className="relative max-w-xs w-full">
             <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-600 pointer-events-none" />
             <input
-              className="form-input pl-10 py-2.5 text-sm"
-              placeholder="Search games…"
+              className="form-input pl-10 pr-9 py-2.5 text-sm"
+              placeholder="Search by title or genre…"
               value={search}
               onChange={e => setSearch(e.target.value)}
             />
+            {search && (
+              <button
+                onClick={() => setSearch('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400"
+              >
+                <X size={13} />
+              </button>
+            )}
           </div>
         </div>
+
+        {/* FTS status line */}
+        {isSearching && !searching && searchResults !== null && (
+          <p className="text-xs text-slate-600 mb-4">
+            {searchResults.length > 0
+              ? <><span className="text-slate-400 font-medium">{searchResults.length}</span> result{searchResults.length !== 1 ? 's' : ''} for <span className="text-primary">"{search}"</span> — ranked by relevance</>
+              : <>No results for <span className="text-slate-400">"{search}"</span></>
+            }
+          </p>
+        )}
+        {isSearching && searching && (
+          <p className="text-xs text-slate-600 mb-4">Searching…</p>
+        )}
 
         {/* Grid */}
         {fetchError ? (
@@ -111,20 +179,25 @@ export default function Library() {
               <div key={i} className="skeleton aspect-[16/9] rounded-xl" />
             ))}
           </div>
-        ) : filtered.length === 0 ? (
+        ) : displayed.length === 0 && isSearching ? (
           <div className="text-center py-24">
-            <Gamepad2 size={40} className="text-slate-700 mx-auto mb-3" />
+            <Search size={40} className="text-slate-700 mx-auto mb-3" />
             <p className="text-slate-500">No games match your search.</p>
+            <button onClick={() => setSearch('')} className="btn-ghost px-5 py-2 text-sm mt-4">
+              Clear search
+            </button>
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-            {filtered.map(game => (
+            {displayed.map(game => (
               <GameCard
                 key={game.id}
                 game={game}
                 owned={ownedIds.has(game.id)}
+                wished={wishlistIds.has(game.id)}
                 toggling={toggling.has(game.id)}
                 onToggle={() => toggleGame(game.id)}
+                onWishlist={() => toggleWishlist(game.id)}
               />
             ))}
           </div>
@@ -134,7 +207,7 @@ export default function Library() {
   )
 }
 
-function GameCard({ game, owned, toggling, onToggle }) {
+function GameCard({ game, owned, wished, toggling, onToggle, onWishlist }) {
   const [imgError, setImgError] = useState(false)
 
   return (
@@ -158,6 +231,17 @@ function GameCard({ game, owned, toggling, onToggle }) {
           </div>
         )}
         {owned && <div className="absolute inset-0 bg-primary/10 pointer-events-none" />}
+        {/* Wishlist heart button */}
+        <button
+          onClick={e => { e.stopPropagation(); onWishlist() }}
+          className={`absolute top-2 right-2 w-6 h-6 rounded-full flex items-center justify-center
+            transition-all ${wished
+              ? 'bg-rose-500/30 text-rose-400'
+              : 'bg-black/40 text-slate-500 opacity-0 group-hover:opacity-100'}`}
+          title={wished ? 'Remove from wishlist' : 'Add to wishlist'}
+        >
+          <Heart size={11} fill={wished ? 'currentColor' : 'none'} />
+        </button>
         {game.is_free && (
           <span className="absolute top-2 left-2 text-[10px] font-bold uppercase tracking-wider
             bg-green-500/20 border border-green-500/30 text-green-400 px-1.5 py-0.5 rounded">
@@ -171,7 +255,7 @@ function GameCard({ game, owned, toggling, onToggle }) {
           {game.title}
         </h3>
         <div className="flex flex-wrap gap-1 mb-3">
-          {game.genres.slice(0, 2).map(g => (
+          {(game.genres ?? []).slice(0, 2).map(g => (
             <span key={g} className="text-[10px] text-slate-500 bg-white/[0.05] px-1.5 py-0.5 rounded">
               {g}
             </span>
