@@ -491,7 +491,7 @@ Members: user_id (prevents double-voting)
 | 4 | Preference Profiles | JSONB profiles updating, shortlist ranking working | ✅ Complete — tagged phase-4 |
 | 5 | Live Voting | Redis voting with real-time WebSocket updates | ✅ Complete — tagged phase-5 |
 | 6 | Session History | Full session logging and rating flow | ✅ Complete — tagged phase-6 |
-| 7 | Polish & GitHub | Styled app pushed to public repo | Not started |
+| 7 | Polish & GitHub | Styled app pushed to public repo | ✅ Complete — tagged phase-7 |
 
 ### Advanced DBMS Concepts Demonstrated
 
