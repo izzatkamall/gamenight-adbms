@@ -1,0 +1,410 @@
+% ============================================================
+%  GameNight - Advanced DBMS Semester Project Report
+% ============================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{titlesec}
+\usepackage[hidelinks]{hyperref}
+
+% ---- Colors ----
+\definecolor{accent}{HTML}{7C3AED}
+\definecolor{codebg}{HTML}{F5F5FA}
+\definecolor{codekw}{HTML}{6D28D9}
+\definecolor{codecm}{HTML}{6B7280}
+\definecolor{codestr}{HTML}{0E7490}
+
+% ---- Listings (SQL / JS / shell) ----
+\lstdefinestyle{base}{
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{codekw}\bfseries,
+  commentstyle=\color{codecm}\itshape,
+  stringstyle=\color{codestr},
+  breaklines=true,
+  showstringspaces=false,
+  frame=single,
+  rulecolor=\color{gray!30},
+  framesep=6pt,
+  xleftmargin=8pt,
+  numbers=none,
+  captionpos=b,
+}
+\lstset{style=base}
+
+% ---- Section styling ----
+\titleformat{\section}{\Large\bfseries\color{accent}}{\thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{1em}{}
+
+% ---- Screenshot helper: shows image if present (in ../screenshots or
+%      ./screenshots), else a placeholder box so the document still compiles ----
+\newcommand{\screenshot}[3]{%
+  \begin{figure}[H]
+    \centering
+    \IfFileExists{../screenshots/#1}{%
+      \fbox{\includegraphics[width=0.85\textwidth]{../screenshots/#1}}%
+    }{%
+      \IfFileExists{screenshots/#1}{%
+        \fbox{\includegraphics[width=0.85\textwidth]{screenshots/#1}}%
+      }{%
+        \fbox{\parbox[c][4cm][c]{0.8\textwidth}{\centering\color{gray}\itshape
+          [ screenshot placeholder ]\\\texttt{screenshots/#1}}}%
+      }%
+    }
+    \caption{#2}\label{#3}
+  \end{figure}%
+}
+
+\begin{document}
+
+% ===================== TITLE =====================
+\begin{titlepage}
+\centering
+\vspace*{2cm}
+{\Huge\bfseries\color{accent} GameNight\par}
+\vspace{0.4cm}
+{\Large A Group Video Game Night Planner\par}
+\vspace{1.5cm}
+{\large\bfseries Advanced Database Management Systems\\Individual Semester Project\par}
+\vspace{2cm}
+\begin{tabular}{rl}
+\textbf{Student:} & Muhammad Izzat Kamal \\[4pt]
+\textbf{Roll No:} & BSAI24078 \\[4pt]
+\textbf{Course:} & Advanced Database Management Systems \\
+\end{tabular}
+\vfill
+\begin{tabular}{rl}
+\textbf{Live App:} & \url{https://gamenight-adbms.vercel.app} \\[4pt]
+\textbf{Repository:} & \url{https://github.com/izzatkamall/gamenight-adbms} \\
+\end{tabular}
+\vspace{1cm}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+% ===================== 1. DESCRIPTION =====================
+\section{Project Title and Description}
+\textbf{GameNight} is a database-backed web application that helps friend groups
+decide which video game to play together. It tackles the everyday problem of
+conflicting game libraries, differing genre tastes, and group indecision by:
+
+\begin{itemize}[leftmargin=1.4em]
+  \item Computing the set of games that \emph{every} member of a room owns in common.
+  \item Building per-user taste profiles from session ratings, stored as JSONB.
+  \item Ranking a shortlist of candidate games by aggregate group preference.
+  \item Running a \emph{live, real-time vote} among the group to pick the winner.
+  \item Logging every game-night session so future recommendations improve.
+\end{itemize}
+
+The project is intentionally designed to showcase a broad range of advanced
+database concepts within a single, coherent application --- JSONB document
+modelling inside a relational database, set-theoretic intersection queries,
+stored procedures, triggers, row-level security, an in-memory store (Redis)
+for high-frequency writes, and real-time subscriptions.
+
+% ===================== 2. OBJECTIVES & SCOPE =====================
+\section{Objectives and Scope}
+\subsection{Objectives}
+\begin{itemize}[leftmargin=1.4em]
+  \item Design a normalised (3NF) relational schema for users, games, libraries,
+        rooms, voting, and session history.
+  \item Demonstrate the integration of a NoSQL-style JSONB document model
+        \emph{within} PostgreSQL for flexible preference profiles.
+  \item Implement core business logic as PostgreSQL stored functions rather than
+        in application code.
+  \item Use Redis as a justified in-memory store for the write-heavy, latency-sensitive
+        live-voting feature.
+  \item Enforce data isolation between users and rooms using Row-Level Security (RLS).
+  \item Deploy the application so it is publicly accessible.
+\end{itemize}
+
+\subsection{Scope}
+\textbf{In scope:} user registration/authentication, personal game libraries,
+room creation and joining, common-library computation, preference profiles,
+ranked shortlists, real-time voting, session logging and ratings, session
+history, and a set of bonus DBMS features (materialized views, window functions,
+full-text search, audit logging via triggers, real-time chat, and wishlists).
+
+\textbf{Out of scope:} integration with external game-store APIs (e.g.\ Steam),
+payment processing, mobile-native apps, and matchmaking with strangers. The game
+catalogue is a curated seed set rather than a live external feed.
+
+% ===================== 3. TECH STACK & ARCHITECTURE =====================
+\section{Tech Stack and Architecture}
+\subsection{Technology Stack}
+\begin{longtable}{p{3.2cm} p{10.5cm}}
+\toprule
+\textbf{Layer} & \textbf{Technology} \\
+\midrule
+Frontend        & React + Vite + Tailwind CSS (dark/glassmorphism UI) \\
+Primary Database & PostgreSQL via Supabase --- JSONB, stored functions, triggers, RLS, GIN indexes \\
+Authentication  & Supabase Auth (email/password) \\
+Real-time       & Supabase Realtime (\texttt{postgres\_changes}) for room state and chat \\
+In-memory Store & Redis --- Sorted Sets and Sets for live voting \\
+Middleware      & Node.js + Express + WebSocket (\texttt{ws}) + \texttt{ioredis} \\
+\bottomrule
+\end{longtable}
+
+\subsection{Architecture Overview}
+The frontend talks \emph{directly} to Supabase for all standard CRUD, auth, and
+real-time subscriptions. A separate lightweight Node.js middleware exists for one
+purpose only: bridging the browser to Redis over WebSockets for the live vote,
+where atomic, sub-millisecond increments are required.
+
+\begin{lstlisting}[basicstyle=\ttfamily\scriptsize]
++-------------+   Supabase JS client (auth, queries,   +----------------------+
+|  React App  |<--  real-time subscriptions) -------->  |  Supabase            |
+|  (Vite)     |                                         |  PostgreSQL +        |
+|             |                                         |  Realtime + Auth     |
+|             |   WebSocket                             +----------------------+
+|             |<----------------------------->  +----------------------+
++-------------+                                 |  Node.js middleware   |
+                                                |  (Express + ws)       |
+                                                +----------+-----------+
+                                                           | Redis commands
+                                                +----------v-----------+
+                                                |  Redis (Sorted Sets) |
+                                                +----------------------+
+\end{lstlisting}
+
+\textbf{Live-voting data flow:} (1) React opens a WebSocket to the middleware;
+(2) the middleware validates room membership, then writes votes to Redis Sorted
+Sets via atomic \texttt{ZINCRBY} and prevents double-voting with a Redis Set;
+(3) updated tallies are broadcast to all room members; (4) when a majority (or
+plurality once everyone has voted) is reached, the winner is persisted to
+PostgreSQL and the Redis keys are deleted.
+
+% ===================== 4. DATABASE DESIGN =====================
+\section{Database Design}
+\subsection{Core Schema}
+The schema is normalised to 3NF. Junction tables (\texttt{user\_libraries},
+\texttt{room\_members}, \texttt{session\_ratings}) resolve the many-to-many
+relationships with composite primary keys.
+
+\begin{lstlisting}[language=SQL]
+profiles(id PK -> auth.users, username UNIQUE, avatar_url,
+         preferences JSONB, created_at)
+games(id PK, title, genre TEXT[], min_players, max_players,
+      avg_playtime_minutes, cover_url)
+user_libraries(user_id FK, game_id FK, PK(user_id, game_id))
+rooms(id PK, name, host_id FK, status, created_at)
+room_members(room_id FK, user_id FK, joined_at, PK(room_id, user_id))
+voting_sessions(id PK, room_id FK, started_at, ended_at, winner_game_id FK)
+game_sessions(id PK, room_id FK, game_id FK, started_at, ended_at,
+              duration_minutes, notes)
+session_ratings(session_id FK, user_id FK, rating CHECK(1..5),
+                PK(session_id, user_id))
+\end{lstlisting}
+
+Bonus features add \texttt{room\_messages} (real-time chat), \texttt{game\_wishlists}
+(wishlist set queries), and an audit-log table populated by triggers.
+
+\subsection{JSONB Preference Document}
+The \texttt{profiles.preferences} column holds a flexible document, indexed with a
+GIN index for fast containment queries:
+\begin{lstlisting}[language=SQL]
+{
+  "favorite_genres": ["FPS", "RPG"],
+  "avg_session_minutes": 90,
+  "genre_weights": { "FPS": 0.8, "RPG": 0.6, "Strategy": 0.3 },
+  "total_sessions": 12
+}
+\end{lstlisting}
+
+% ===================== 5. ADBMS CONCEPTS =====================
+\section{Advanced DBMS Concepts Demonstrated}
+\begin{longtable}{p{4.2cm} p{9.6cm}}
+\toprule
+\textbf{Concept} & \textbf{Where / How Used} \\
+\midrule
+JSONB document model & \texttt{profiles.preferences} --- flexible schema inside PostgreSQL, updated with an exponential moving average after each rating. \\
+Set intersection & \texttt{get\_common\_games} finds games every room member owns. \\
+Aggregates + HAVING & \texttt{HAVING COUNT(DISTINCT user\_id) = member\_count} guarantees a true intersection. \\
+Stored functions & 8 PL/pgSQL functions encapsulate business logic (see \S\ref{sec:impl}). \\
+Triggers & Auto-create a profile on signup; audit-log triggers on insert/update; preference update after ratings. \\
+GIN index & On \texttt{profiles.preferences} (JSONB) and on full-text \texttt{tsvector} columns. \\
+Row-Level Security & Per-user and per-room access control on all tables. \\
+In-memory DB (Redis) & Sorted Sets for live vote tallies; Sets to prevent double-voting. \\
+Real-time subscriptions & Supabase Realtime drives live room state and chat. \\
+Materialized view & Pre-computed room statistics, refreshed concurrently. \\
+Window functions & \texttt{DENSE\_RANK() OVER (...)} for a room leaderboard. \\
+Full-text search & \texttt{tsvector} + \texttt{websearch\_to\_tsquery} + GIN index for game search. \\
+Normalization & All relational tables in 3NF. \\
+\bottomrule
+\end{longtable}
+
+% ===================== 6. IMPLEMENTATION DETAILS =====================
+\section{Implementation Details}\label{sec:impl}
+
+\subsection{Auth and Profile Trigger}
+Supabase Auth manages credentials. A PostgreSQL trigger on \texttt{auth.users}
+automatically inserts a matching row into \texttt{profiles} on registration, so
+the application never has to create profiles manually.
+
+\subsection{Common-Library Intersection}
+The signature query of the project --- it returns only games owned by \emph{all}
+room members:
+\begin{lstlisting}[language=SQL]
+SELECT g.*
+FROM games g
+JOIN user_libraries ul ON ul.game_id = g.id
+WHERE ul.user_id IN (SELECT user_id FROM room_members WHERE room_id = $1)
+GROUP BY g.id
+HAVING COUNT(DISTINCT ul.user_id) =
+       (SELECT COUNT(*) FROM room_members WHERE room_id = $1);
+\end{lstlisting}
+
+\subsection{Preference-Aware Shortlist}
+\texttt{get\_shortlist} ranks the common games by average group preference,
+falling back to a neutral 0.5 weight for users with no data yet:
+\begin{lstlisting}[language=SQL]
+SELECT g.*,
+  AVG(COALESCE((p.preferences->'genre_weights'->>g.genre[1])::float, 0.5))
+    AS group_score
+FROM games g
+JOIN user_libraries ul ON ul.game_id = g.id
+JOIN profiles p ON p.id = ul.user_id
+WHERE ul.user_id IN (SELECT user_id FROM room_members WHERE room_id = $1)
+GROUP BY g.id
+HAVING COUNT(DISTINCT ul.user_id) =
+       (SELECT COUNT(*) FROM room_members WHERE room_id = $1)
+ORDER BY group_score DESC
+LIMIT 5;
+\end{lstlisting}
+
+\subsection{Preference Update (EMA)}
+After each session rating, a stored function nudges the user's genre weight using
+an exponential moving average, keeping the JSONB profile adaptive:
+\begin{lstlisting}[language=SQL]
+new_weight = old_weight * 0.8 + (rating / 5.0) * 0.2
+\end{lstlisting}
+
+\subsection{Live Voting with Redis}
+The middleware models each vote as Redis structures keyed by room and voting
+session:
+\begin{lstlisting}
+vote:{room_id}:{voting_session_id}    -> Sorted Set (member=game_id, score=votes)
+voters:{room_id}:{voting_session_id}  -> Set (member=user_id, blocks double-votes)
+\end{lstlisting}
+On each vote the server checks \texttt{SISMEMBER}, then \texttt{ZINCRBY}, then
+\texttt{SADD}, and broadcasts tallies. A game wins on majority
+(\texttt{ceil(members/2)}); if all members have voted with no majority, the
+plurality leader wins. The winner is persisted to \texttt{voting\_sessions} and a
+\texttt{game\_sessions} row is created.
+
+\subsection{Bonus Features}
+\begin{itemize}[leftmargin=1.4em]
+  \item \textbf{Materialized view} of room statistics with concurrent refresh.
+  \item \textbf{Window-function leaderboard} using \texttt{DENSE\_RANK()}.
+  \item \textbf{Full-text search} on games via \texttt{tsvector} + GIN + trigger.
+  \item \textbf{Audit log} populated by \texttt{AFTER INSERT/UPDATE} triggers with JSONB metadata.
+  \item \textbf{Real-time chat} per room via Supabase Realtime with optimistic updates.
+  \item \textbf{Rematch / Play Again} and a personal \textbf{Wishlist} with a set-based room wishlist query.
+\end{itemize}
+
+% ===================== 7. FEATURES =====================
+\section{Features and Functionalities}
+\begin{itemize}[leftmargin=1.4em]
+  \item \textbf{Authentication:} register, log in, log out, persistent sessions, auto-created profile.
+  \item \textbf{Game Library:} browse a seeded catalogue and toggle owned games.
+  \item \textbf{Rooms:} create a room (auto invite code), join by code, view members.
+  \item \textbf{Common Games:} live intersection of all members' libraries.
+  \item \textbf{Smart Shortlist:} top games ranked by aggregate group preference.
+  \item \textbf{Live Voting:} real-time vote bars, majority/plurality resolution, no double-voting.
+  \item \textbf{Session Logging:} sessions recorded with duration; per-user 1--5 star ratings.
+  \item \textbf{Preference Profiles:} JSONB taste profiles that adapt after each rating.
+  \item \textbf{History \& Stats:} per-room session history and personal statistics.
+  \item \textbf{Bonus:} room chat, leaderboard, full-text game search, audit log, wishlist, rematch.
+\end{itemize}
+
+% ===================== 8. DEPLOYMENT =====================
+\section{Deployment}
+\begin{itemize}[leftmargin=1.4em]
+  \item \textbf{Frontend:} deployed on Vercel --- \url{https://gamenight-adbms.vercel.app}
+        (publicly available at all times).
+  \item \textbf{Database / Auth / Realtime:} hosted on Supabase (cloud).
+  \item \textbf{Live-voting middleware:} a Node.js + Redis WebSocket server exposed
+        over a secure tunnel during demonstrations; all other features run 24/7.
+\end{itemize}
+
+% ===================== 9. RUNNING LOCALLY =====================
+\section{Instructions for Running the Project}
+\subsection{Prerequisites}
+Node.js v18+, Redis, a Supabase project, and Git.
+
+\subsection{Setup}
+\begin{lstlisting}[language=bash]
+# 1. Clone
+git clone https://github.com/izzatkamall/gamenight-adbms.git
+cd gamenight-adbms
+
+# 2. Apply database migrations
+#    Run every file in supabase/migrations/ in numeric order
+#    (001 ... 021) in the Supabase SQL editor.
+
+# 3. Frontend environment  ->  frontend/.env.local
+#    VITE_SUPABASE_URL=...
+#    VITE_SUPABASE_ANON_KEY=...
+#    VITE_MIDDLEWARE_WS_URL=ws://localhost:4000
+
+# 4. Middleware environment ->  middleware/.env
+#    REDIS_URL=redis://localhost:6379
+#    SUPABASE_URL=...
+#    SUPABASE_SERVICE_ROLE_KEY=...
+#    PORT=4000
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash]
+# 5. Install dependencies
+cd frontend   && npm install
+cd ../middleware && npm install
+
+# 6. Run (three terminals)
+redis-server                 # terminal 1
+cd middleware && node index.js   # terminal 2
+cd frontend  && npm run dev      # terminal 3
+# open http://localhost:5173
+\end{lstlisting}
+
+% ===================== 10. SCREENSHOTS =====================
+\section{Screenshots}
+
+\subsection{Application}
+\screenshot{landing.png}{Landing page --- dark, futuristic gaming UI.}{fig:landing}
+\screenshot{auth.png}{User authentication (login / register).}{fig:auth}
+\screenshot{dashboard.png}{Dashboard with the user's rooms and quick actions.}{fig:dashboard}
+\screenshot{library.png}{Game library --- toggling owned games.}{fig:library}
+\screenshot{room-lobby.png}{Room lobby --- common games and the preference-ranked shortlist.}{fig:lobby}
+\screenshot{voting.png}{Live voting screen with real-time vote tallies.}{fig:voting}
+\screenshot{session-history.png}{Session history / results.}{fig:history}
+\screenshot{profile.png}{Profile page --- genre preference breakdown and stats.}{fig:profile}
+
+\subsection{Database and Backend}
+\screenshot{supabase-tables.png}{Supabase Table Editor --- normalised schema with RLS enabled.}{fig:tables}
+\screenshot{sql-function.png}{Stored function returning a room's common games / shortlist.}{fig:func}
+\screenshot{jsonb-preferences.png}{A profile's \texttt{preferences} JSONB document with genre weights.}{fig:jsonb}
+\screenshot{redis-voting.png}{Redis Sorted Set holding live vote tallies during a session.}{fig:redis}
+
+% ===================== 11. CONCLUSION =====================
+\section{Additional Information for Evaluation}
+GameNight demonstrates how a single application can responsibly combine a
+relational core (normalised schema, stored functions, triggers, RLS) with a
+document model (JSONB), an in-memory store (Redis) for a genuinely
+latency-sensitive feature, and real-time data flow. Each technology is used where
+it is the right tool rather than for its own sake, and the live-voting path in
+particular justifies Redis through its atomic, high-frequency write pattern.
+
+The complete source code, all 21 SQL migrations, and commit history are available
+in the public repository linked on the title page.
+
+\end{document}

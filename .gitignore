@@ -35,6 +35,12 @@ desktop.ini
 UI reference images/
 adbms_projectprop.pdf
 
+# Local LaTeX toolchain (downloaded Tectonic binary) and build artifacts
+.tools/
+*.aux
+*.toc
+*.out
+
 # Logs
 npm-debug.log*
 yarn-debug.log*
