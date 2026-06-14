@@ -6,6 +6,16 @@
 
 ---
 
+## 🚀 Live Demo
+
+**App:** https://gamenight-adbms.vercel.app
+
+The frontend (Vercel), database, auth, and real-time features (Supabase) are live **24/7** — register an account and explore from any device.
+
+> **Note on live voting:** The real-time voting feature is powered by a Node.js + Redis WebSocket middleware that runs locally and is exposed via a secure tunnel. It is online **during scheduled demos**. Everything else (auth, game library, rooms, chat, profiles, session history) works at all times.
+
+---
+
 ## Overview
 
 GameNight is a real-time group video game night planner. It solves the problem of indecisive gaming groups by:
